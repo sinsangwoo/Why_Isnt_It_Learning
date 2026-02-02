@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gradient-pathology"
-version = "0.1.0"
+version = "0.2.0"
 description = "From high school curiosity to production ML training diagnostics"
 authors = [
     {name = "Sangwoo Sin", email = "sinsangwoo@example.com"}
@@ -30,7 +30,6 @@ dependencies = [
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "tqdm>=4.65.0",
-    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -40,12 +39,22 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.5.0",
     "black>=23.7.0",
+    "types-tqdm>=4.66.0",
+]
+dashboard = [
+    "streamlit>=1.28.0",
+]
+all = [
+    "gradient-pathology[dev,dashboard]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
 Repository = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
 Issues = "https://github.com/sinsangwoo/Why_Isnt_It_Learning/issues"
+
+[project.scripts]
+gradient-dashboard = "gradient_pathology.dashboard:run_dashboard"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -56,6 +65,10 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=gradient_pathology --cov-report=term-missing"
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
@@ -74,3 +87,18 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = [
+    "build",
+    "dist",
+]
+
+# Exclude PyTorch internal files (contains Python 3.10+ syntax)
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "matplotlib.*",
+    "tqdm.*",
+    "streamlit.*",
+]
+ignore_errors = true
+ignore_missing_imports = true
