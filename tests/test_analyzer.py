@@ -1,5 +1,6 @@
 """Tests for GradientAnalyzer."""
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -7,6 +8,7 @@ from gradient_pathology import GradientAnalyzer
 from gradient_pathology.core import GradientPathology
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_analyzer_basic() -> None:
     """Test basic analyzer functionality."""
     model = nn.Sequential(
@@ -24,6 +26,7 @@ def test_analyzer_basic() -> None:
     assert report.global_std >= 0
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_vanishing_gradient_detection() -> None:
     """Test detection of vanishing gradients."""
     # Deep sigmoid network should trigger vanishing gradients
@@ -40,6 +43,7 @@ def test_vanishing_gradient_detection() -> None:
     assert GradientPathology.VANISHING in pathologies
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_healthy_gradient_flow() -> None:
     """Test that modern architectures show healthy gradients."""
     # Shallow ReLU network should be healthy
@@ -61,6 +65,7 @@ def test_healthy_gradient_flow() -> None:
     assert healthy_count >= len(report.layer_stats) // 2
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_report_summary() -> None:
     """Test report summary generation."""
     model = nn.Sequential(nn.Linear(10, 1))
