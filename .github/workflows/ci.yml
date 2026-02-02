@@ -55,4 +55,5 @@ jobs:
     
     - name: Type check with mypy
       run: |
+        mypy src --no-error-summary 2>&1 | grep -v "torch/_inductor" || true
         mypy src
