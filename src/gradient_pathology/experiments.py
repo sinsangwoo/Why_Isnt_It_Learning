@@ -1,6 +1,6 @@
 """Experimental utilities for benchmarking gradient behavior."""
 
-from typing import Dict
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -58,7 +58,7 @@ def create_deep_network(
 
 def compare_activations(
     depth: int = 20,
-    activations: list = None,
+    activations: Optional[List[str]] = None,
     samples: int = 100,
 ) -> Dict[str, GradientReport]:
     """Compare gradient behavior across activation functions.

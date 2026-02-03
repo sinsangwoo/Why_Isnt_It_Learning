@@ -1,7 +1,6 @@
 """Tests for GradientAnalyzer."""
 
 import pytest
-import torch
 import torch.nn as nn
 
 from gradient_pathology import GradientAnalyzer

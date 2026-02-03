@@ -1,0 +1,21 @@
+# Ruff configuration for gradient-pathology
+
+line-length = 100
+target-version = "py39"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "W",   # pycodestyle warnings
+    "UP",  # pyupgrade
+]
+
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py

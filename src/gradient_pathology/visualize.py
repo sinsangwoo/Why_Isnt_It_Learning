@@ -5,10 +5,12 @@ from typing import Dict, List, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
-from gradient_pathology.core import GradientPathology, GradientReport
+from gradient_pathology.core import GradientReport
 
 
-def plot_gradient_heatmap(report: GradientReport, save_path: Optional[str] = None) -> plt.Figure:
+def plot_gradient_heatmap(
+    report: GradientReport, save_path: Optional[str] = None
+) -> plt.Figure:
     """Create heatmap of gradient statistics across layers.
 
     Args:
@@ -97,7 +99,7 @@ def plot_layer_comparison(
 
 def plot_training_timeline(
     gradient_history: List[Dict[str, Dict[str, float]]],
-    layer_names: Optional[List[str]] = None,
+    layer_names: Optional[list[str]] = None,
     save_path: Optional[str] = None,
 ) -> plt.Figure:
     """Plot gradient evolution over training steps.
@@ -122,8 +124,9 @@ def plot_training_timeline(
 
     for layer in layer_names:
         values = [
-            step.get(layer, {}).get("mean", np.nan) 
-            if isinstance(step.get(layer), dict) else np.nan
+            step.get(layer, {}).get("mean", np.nan)
+            if isinstance(step.get(layer), dict)
+            else np.nan
             for step in gradient_history
         ]
         ax.plot(values, label=layer, alpha=0.7)
