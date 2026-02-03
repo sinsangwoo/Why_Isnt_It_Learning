@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gradient-pathology"
-version = "0.1.0"
+version = "0.2.0"
 description = "From high school curiosity to production ML training diagnostics"
 authors = [
     {name = "Sangwoo Sin", email = "sinsangwoo@example.com"}
@@ -46,6 +46,9 @@ dev = [
 Homepage = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
 Repository = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
 Issues = "https://github.com/sinsangwoo/Why_Isnt_It_Learning/issues"
+
+[project.scripts]
+gradient-dashboard = "gradient_pathology.dashboard:run_dashboard"
 
 [tool.setuptools.packages.find]
 where = ["src"]
