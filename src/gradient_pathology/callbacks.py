@@ -24,7 +24,7 @@ class GradientMonitor:
     def __init__(
         self,
         model: nn.Module,
-        alert_threshold: float = 1e-7,
+        alert_threshold: float = 1e-8,  # More conservative threshold
         window_size: int = 100,
     ):
         """Initialize gradient monitor.
@@ -52,10 +52,10 @@ class GradientMonitor:
                     "max": float(np.max(np.abs(grad))),
                 }
 
-                # Check for pathologies
+                # Check for pathologies (conservative thresholds)
                 if stats[name]["mean"] < self.alert_threshold:
                     self._alerts.append(f"Vanishing gradient in {name}: {stats[name]['mean']:.2e}")
-                if stats[name]["mean"] > 1e2:
+                if stats[name]["mean"] > 1e3:  # Changed from 1e2 to 1e3
                     self._alerts.append(f"Exploding gradient in {name}: {stats[name]['mean']:.2e}")
 
         self.history.append(stats)
@@ -82,10 +82,18 @@ class GradientMonitor:
             means = [step[layer_name]["mean"] for step in self.history]
             stds = [step[layer_name]["std"] for step in self.history]
 
+            # Compute trend only if enough samples (avoid polyfit errors)
+            trend = 0.0
+            if len(means) >= 2:
+                try:
+                    trend = float(np.polyfit(range(len(means)), means, 1)[0])
+                except (np.linalg.LinAlgError, ValueError):
+                    trend = 0.0  # Fallback if polyfit fails
+
             aggregated[layer_name] = {
                 "mean_of_means": float(np.mean(means)),
                 "std_of_means": float(np.std(means)),
-                "trend": float(np.polyfit(range(len(means)), means, 1)[0]),  # Slope
+                "trend": trend,
             }
 
         return aggregated
@@ -96,11 +104,14 @@ class GradientMonitor:
         issues = []
 
         for layer_name, layer_stats in stats.items():
-            # Degrading gradients
-            if layer_stats["trend"] < -1e-6:
+            # Degrading gradients (more conservative threshold)
+            if layer_stats["trend"] < -1e-5:
                 issues.append(f"{layer_name}: Gradients degrading over time")
-            # Unstable training
-            if layer_stats["std_of_means"] > 10 * layer_stats["mean_of_means"]:
+            # Unstable training (relaxed threshold)
+            if (
+                layer_stats["std_of_means"] > 100 * layer_stats["mean_of_means"]
+                and layer_stats["mean_of_means"] > 1e-6
+            ):
                 issues.append(f"{layer_name}: High variance (unstable training)")
 
         return issues

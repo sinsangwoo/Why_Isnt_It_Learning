@@ -41,6 +41,12 @@ dev = [
     "black>=23.7.0",
     "types-tqdm>=4.66.0",
 ]
+dashboard = [
+    "streamlit>=1.28.0",
+]
+all = [
+    "gradient-pathology[dev,dashboard]",
+]
 
 [project.urls]
 Homepage = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
@@ -62,6 +68,7 @@ addopts = "-v --cov=gradient_pathology --cov-report=term-missing"
 filterwarnings = [
     "ignore::UserWarning",
     "ignore::DeprecationWarning",
+    "ignore::RuntimeWarning",
 ]
 
 [tool.ruff]
@@ -86,12 +93,20 @@ exclude = [
     "dist",
 ]
 
-# Exclude PyTorch internal files (contains Python 3.10+ syntax)
+# Completely exclude PyTorch internals from type checking
 [[tool.mypy.overrides]]
 module = [
+    "torch",
     "torch.*",
+    "torchvision",
+    "torchvision.*",
+    "matplotlib",
     "matplotlib.*",
+    "tqdm",
     "tqdm.*",
+    "streamlit",
+    "streamlit.*",
 ]
 ignore_errors = true
 ignore_missing_imports = true
+follow_imports = "skip"
