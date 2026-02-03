@@ -38,28 +38,27 @@ class LayerGradientStats:
 
     def diagnose(self) -> GradientPathology:
         """Diagnose gradient health for this layer.
-        
-        Balanced thresholds that detect real issues without false positives.
+
+        Balanced thresholds: 20x std catches sigmoid issues without false positives.
         """
         abs_mean = abs(self.mean)
-        
-        # Vanishing: extremely small gradients (stricter)
+
+        # Vanishing: extremely small gradients
         if abs_mean < 1e-8:
             return GradientPathology.VANISHING
-        
+
         # Exploding: very large gradients
         if abs_mean > 1e3:
             return GradientPathology.EXPLODING
-        
-        # Dead neurons: vast majority of gradients are zero
+
+        # Dead neurons: vast majority are zero
         if self.zero_ratio > 0.9:
             return GradientPathology.DEAD_NEURONS
-        
-        # Unstable: balanced threshold (30x instead of 10x or 100x)
-        # Catches real instability without false positives on healthy networks
-        if self.std > 30 * abs_mean and abs_mean > 1e-6:
+
+        # Unstable: 20x threshold - balanced for production
+        if self.std > 20 * abs_mean and abs_mean > 1e-6:
             return GradientPathology.UNSTABLE
-        
+
         return GradientPathology.HEALTHY
 
 

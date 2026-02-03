@@ -105,9 +105,9 @@ class GradientMonitor:
             # Degrading gradients
             if layer_stats["trend"] < -1e-5:
                 issues.append(f"{layer_name}: Gradients degrading over time")
-            # Unstable training (balanced threshold)
+            # Unstable training (20x threshold)
             if (
-                layer_stats["std_of_means"] > 30 * layer_stats["mean_of_means"]
+                layer_stats["std_of_means"] > 20 * layer_stats["mean_of_means"]
                 and layer_stats["mean_of_means"] > 1e-6
             ):
                 issues.append(f"{layer_name}: High variance (unstable training)")
