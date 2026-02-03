@@ -96,7 +96,7 @@ def plot_layer_comparison(
 
 
 def plot_training_timeline(
-    gradient_history: List[Dict[str, float]],
+    gradient_history: List[Dict[str, Dict[str, float]]],
     layer_names: Optional[List[str]] = None,
     save_path: Optional[str] = None,
 ) -> plt.Figure:
@@ -121,7 +121,11 @@ def plot_training_timeline(
     fig, ax = plt.subplots(figsize=(14, 6))
 
     for layer in layer_names:
-        values = [step.get(layer, {}).get("mean", np.nan) for step in gradient_history]
+        values = [
+            step.get(layer, {}).get("mean", np.nan) 
+            if isinstance(step.get(layer), dict) else np.nan
+            for step in gradient_history
+        ]
         ax.plot(values, label=layer, alpha=0.7)
 
     ax.set_xlabel("Training Step")

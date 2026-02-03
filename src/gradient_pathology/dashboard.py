@@ -1,6 +1,6 @@
 """Real-time gradient monitoring dashboard using Streamlit."""
 
-from typing import Optional
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,11 +9,11 @@ import torch
 import torch.nn as nn
 
 from gradient_pathology.analyzer import GradientAnalyzer
-from gradient_pathology.core import GradientPathology
+from gradient_pathology.core import GradientPathology, GradientReport
 from gradient_pathology.experiments import create_deep_network
 
 
-def plot_gradient_distribution(report: any) -> plt.Figure:
+def plot_gradient_distribution(report: GradientReport) -> plt.Figure:
     """Plot gradient distribution across layers."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -39,7 +39,7 @@ def plot_gradient_distribution(report: any) -> plt.Figure:
     ax1.grid(True, alpha=0.3)
 
     # Pathology distribution pie chart
-    pathology_counts = {}
+    pathology_counts: Dict[str, int] = {}
     for stats in report.layer_stats:
         p = stats.diagnose()
         pathology_counts[p.value] = pathology_counts.get(p.value, 0) + 1

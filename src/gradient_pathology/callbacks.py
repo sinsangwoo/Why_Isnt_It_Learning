@@ -1,12 +1,10 @@
 """Training callbacks for real-time gradient monitoring."""
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
 import torch.nn as nn
-
-from gradient_pathology.core import GradientPathology, LayerGradientStats
 
 
 class GradientMonitor:
@@ -24,7 +22,7 @@ class GradientMonitor:
     def __init__(
         self,
         model: nn.Module,
-        alert_threshold: float = 1e-8,  # More conservative threshold
+        alert_threshold: float = 1e-8,
         window_size: int = 100,
     ):
         """Initialize gradient monitor.
@@ -37,12 +35,12 @@ class GradientMonitor:
         self.model = model
         self.alert_threshold = alert_threshold
         self.window_size = window_size
-        self.history: List[Dict[str, float]] = []
+        self.history: List[Dict[str, Dict[str, float]]] = []
         self._alerts: List[str] = []
 
     def record_step(self) -> None:
         """Record gradient statistics for current step."""
-        stats = {}
+        stats: Dict[str, Dict[str, float]] = {}
         for name, param in self.model.named_parameters():
             if param.grad is not None:
                 grad = param.grad.detach().cpu().numpy()
@@ -52,10 +50,10 @@ class GradientMonitor:
                     "max": float(np.max(np.abs(grad))),
                 }
 
-                # Check for pathologies (conservative thresholds)
+                # Check for pathologies
                 if stats[name]["mean"] < self.alert_threshold:
                     self._alerts.append(f"Vanishing gradient in {name}: {stats[name]['mean']:.2e}")
-                if stats[name]["mean"] > 1e3:  # Changed from 1e2 to 1e3
+                if stats[name]["mean"] > 1e3:
                     self._alerts.append(f"Exploding gradient in {name}: {stats[name]['mean']:.2e}")
 
         self.history.append(stats)
@@ -77,18 +75,18 @@ class GradientMonitor:
         if not self.history:
             return {}
 
-        aggregated = {}
+        aggregated: Dict[str, Dict[str, float]] = {}
         for layer_name in self.history[0].keys():
             means = [step[layer_name]["mean"] for step in self.history]
             stds = [step[layer_name]["std"] for step in self.history]
 
-            # Compute trend only if enough samples (avoid polyfit errors)
+            # Compute trend only if enough samples
             trend = 0.0
             if len(means) >= 2:
                 try:
                     trend = float(np.polyfit(range(len(means)), means, 1)[0])
                 except (np.linalg.LinAlgError, ValueError):
-                    trend = 0.0  # Fallback if polyfit fails
+                    trend = 0.0
 
             aggregated[layer_name] = {
                 "mean_of_means": float(np.mean(means)),
@@ -104,12 +102,12 @@ class GradientMonitor:
         issues = []
 
         for layer_name, layer_stats in stats.items():
-            # Degrading gradients (more conservative threshold)
+            # Degrading gradients
             if layer_stats["trend"] < -1e-5:
                 issues.append(f"{layer_name}: Gradients degrading over time")
-            # Unstable training (relaxed threshold)
+            # Unstable training (balanced threshold)
             if (
-                layer_stats["std_of_means"] > 100 * layer_stats["mean_of_means"]
+                layer_stats["std_of_means"] > 30 * layer_stats["mean_of_means"]
                 and layer_stats["mean_of_means"] > 1e-6
             ):
                 issues.append(f"{layer_name}: High variance (unstable training)")

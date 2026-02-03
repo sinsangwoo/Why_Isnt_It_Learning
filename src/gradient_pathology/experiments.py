@@ -1,6 +1,6 @@
 """Experimental utilities for benchmarking gradient behavior."""
 
-from typing import Dict, List
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from gradient_pathology.analyzer import GradientAnalyzer
+from gradient_pathology.core import GradientReport
 
 
 def create_deep_network(
@@ -57,9 +58,9 @@ def create_deep_network(
 
 def compare_activations(
     depth: int = 20,
-    activations: List[str] = ["sigmoid", "tanh", "relu"],
+    activations: list = None,
     samples: int = 100,
-) -> Dict[str, GradientAnalyzer]:
+) -> Dict[str, GradientReport]:
     """Compare gradient behavior across activation functions.
 
     Args:
@@ -70,7 +71,10 @@ def compare_activations(
     Returns:
         Dictionary mapping activation names to their reports
     """
-    results = {}
+    if activations is None:
+        activations = ["sigmoid", "tanh", "relu"]
+
+    results: Dict[str, GradientReport] = {}
 
     for act in activations:
         model = create_deep_network(depth=depth, activation=act)
@@ -83,7 +87,7 @@ def compare_activations(
     return results
 
 
-def plot_gradient_comparison(results: Dict[str, any]) -> None:
+def plot_gradient_comparison(results: Dict[str, GradientReport]) -> None:
     """Plot gradient statistics across different configurations.
 
     Args:

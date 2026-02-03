@@ -1,6 +1,6 @@
 """Main gradient analysis engine."""
 
-from typing import Optional
+from typing import Dict, List
 
 import numpy as np
 import torch
@@ -20,15 +20,15 @@ class GradientAnalyzer:
         >>> print(report.summary())
     """
 
-    def __init__(self, model: nn.Module, device: Optional[str] = None):
+    def __init__(self, model: nn.Module, device: str = "cpu"):
         """Initialize analyzer.
 
         Args:
             model: PyTorch model to analyze
-            device: Device to run on ('cuda', 'cpu', or None for auto)
+            device: Device to run on ('cuda', 'cpu')
         """
         self.model = model
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
         self.model.to(self.device)
 
     def diagnose(
@@ -36,7 +36,7 @@ class GradientAnalyzer:
         num_steps: int = 100,
         batch_size: int = 32,
         input_shape: tuple = (10,),
-        loss_fn: Optional[nn.Module] = None,
+        loss_fn: nn.Module = None,
     ) -> GradientReport:
         """Run gradient diagnosis.
 
@@ -44,7 +44,7 @@ class GradientAnalyzer:
             num_steps: Number of forward/backward passes
             batch_size: Batch size for synthetic data
             input_shape: Shape of input data (excluding batch dimension)
-            loss_fn: Loss function (defaults to MSE for regression)
+            loss_fn: Loss function (defaults to MSE)
 
         Returns:
             GradientReport with detailed analysis
@@ -53,7 +53,9 @@ class GradientAnalyzer:
             loss_fn = nn.MSELoss()
 
         # Collect gradients over multiple steps
-        gradient_history = {name: [] for name, _ in self.model.named_parameters()}
+        gradient_history: Dict[str, List[np.ndarray]] = {
+            name: [] for name, _ in self.model.named_parameters()
+        }
 
         self.model.train()
         for _ in tqdm(range(num_steps), desc="Analyzing gradients"):
