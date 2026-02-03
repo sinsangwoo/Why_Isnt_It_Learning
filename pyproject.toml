@@ -41,12 +41,6 @@ dev = [
     "black>=23.7.0",
     "types-tqdm>=4.66.0",
 ]
-dashboard = [
-    "streamlit>=1.28.0",
-]
-all = [
-    "gradient-pathology[dev,dashboard]",
-]
 
 [project.urls]
 Homepage = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
@@ -98,7 +92,6 @@ module = [
     "torch.*",
     "matplotlib.*",
     "tqdm.*",
-    "streamlit.*",
 ]
 ignore_errors = true
 ignore_missing_imports = true
