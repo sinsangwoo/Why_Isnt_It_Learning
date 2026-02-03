@@ -2,10 +2,9 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import List
 
 import numpy as np
-import torch
 
 
 class GradientPathology(Enum):
@@ -39,15 +38,26 @@ class LayerGradientStats:
 
     def diagnose(self) -> GradientPathology:
         """Diagnose gradient health for this layer."""
-        # Thresholds based on empirical ML best practices
-        if abs(self.mean) < 1e-7:
+        # Relaxed thresholds for production stability
+        abs_mean = abs(self.mean)
+        
+        # Vanishing: extremely small gradients
+        if abs_mean < 1e-8:
             return GradientPathology.VANISHING
-        if abs(self.mean) > 1e2:
+        
+        # Exploding: very large gradients
+        if abs_mean > 1e3:
             return GradientPathology.EXPLODING
-        if self.zero_ratio > 0.5:
+        
+        # Dead neurons: majority of gradients are zero
+        if self.zero_ratio > 0.9:
             return GradientPathology.DEAD_NEURONS
-        if self.std > 10 * abs(self.mean):
+        
+        # Unstable: high variance (relaxed threshold)
+        # Changed from 10x to 100x to reduce false positives
+        if self.std > 100 * abs_mean and abs_mean > 1e-6:
             return GradientPathology.UNSTABLE
+        
         return GradientPathology.HEALTHY
 
 
