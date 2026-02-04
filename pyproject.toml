@@ -1,99 +1,35 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gradient-pathology"
-version = "0.2.0"
-description = "From high school curiosity to production ML training diagnostics"
-authors = [
-    {name = "Sangwoo Sin", email = "sinsangwoo@example.com"}
-]
-readme = "README.md"
+version = "0.3.0"
+description = "Automated gradient pathology detection and analysis"
+authors = [{name = "Sangwoo Sin"}]
 requires-python = ">=3.9"
-license = {text = "MIT"}
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
-keywords = ["deep-learning", "gradient", "training", "diagnostics", "pytorch"]
-
 dependencies = [
     "torch>=2.0.0",
-    "numpy>=1.24.0",
-    "matplotlib>=3.7.0",
-    "tqdm>=4.65.0",
+    "numpy>=1.20.0",
+    "matplotlib>=3.3.0",
+    "tqdm>=4.60.0",
 ]
 
 [project.optional-dependencies]
+dashboard = ["streamlit>=1.20.0"]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.0.0",
     "ruff>=0.1.0",
-    "mypy>=1.5.0",
-    "black>=23.7.0",
-    "types-tqdm>=4.66.0",
 ]
-dashboard = [
-    "streamlit>=1.28.0",
-]
-all = [
-    "gradient-pathology[dev,dashboard]",
-]
-
-[project.urls]
-Homepage = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
-Repository = "https://github.com/sinsangwoo/Why_Isnt_It_Learning"
-Issues = "https://github.com/sinsangwoo/Why_Isnt_It_Learning/issues"
-
-[project.scripts]
-gradient-dashboard = "gradient_pathology.dashboard:run_dashboard"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-v --cov=gradient_pathology --cov-report=term-missing"
-filterwarnings = [
-    "ignore::UserWarning",
-    "ignore::DeprecationWarning",
-    "ignore::RuntimeWarning",
-]
-
-[tool.ruff]
-line-length = 100
-target-version = "py39"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-ignore = ["E501"]  # Line too long (handled by formatter)
-
-[tool.black]
-line-length = 100
-target-version = ["py39", "py310", "py311"]
 
 [tool.mypy]
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-exclude = [
-    "build",
-    "dist",
-]
 
-# Completely exclude PyTorch internals from type checking
 [[tool.mypy.overrides]]
 module = [
     "torch",
@@ -106,6 +42,8 @@ module = [
     "tqdm.*",
     "streamlit",
     "streamlit.*",
+    "networkx",
+    "networkx.*",
 ]
 ignore_errors = true
 ignore_missing_imports = true
