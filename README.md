@@ -13,14 +13,17 @@
 
 ## 🎯 What is this?
 
-**Gradient Pathology** is a PyTorch-based framework that automatically diagnoses training instabilities in deep neural networks. Born from a high school student's curiosity about gradient vanishing/exploding, this tool now helps ML engineers debug real-world models in production.
+**Gradient Pathology** is a PyTorch-based framework for diagnosing training instabilities in deep neural networks. From basic gradient analysis to advanced Hessian insights and Transformer-specific diagnostics.
 
 ### The Origin Story
 
 In 2023, as a high school senior, I wondered:
 > *"Can I actually reproduce gradient vanishing and exploding on my own computer?"*
 
-What started as a simple TensorFlow script to visualize gradients across deep networks has evolved into a practical diagnostic framework used by researchers and engineers.
+What started as a simple script has evolved into:
+- **Phase 1**: Static gradient analysis
+- **Phase 2**: Real-time monitoring dashboard
+- **Phase 3**: Research-grade advanced analysis (NEW!)
 
 ---
 
@@ -32,139 +35,175 @@ What started as a simple TensorFlow script to visualize gradients across deep ne
 pip install gradient-pathology
 ```
 
-### 5-Line Usage
+### Basic Usage
 
 ```python
 from gradient_pathology import GradientAnalyzer
 import torch.nn as nn
 
-# Your PyTorch model
+# Your model
 model = nn.Sequential(*[nn.Linear(64, 64), nn.ReLU()] * 20)
 
-# Automatic diagnosis
+# Diagnose
 analyzer = GradientAnalyzer(model)
 report = analyzer.diagnose(num_steps=100)
-print(report.summary())  # "Layer 15: Gradient vanishing detected (mean: 1e-8)"
+print(report.summary())
 ```
 
----
-
-## 🔬 What Problems Does It Solve?
-
-### For ML Engineers
-- **"Why won't my model train?"** → Pinpoint gradient pathologies in seconds
-- **"Which layer is broken?"** → Layer-wise gradient flow visualization
-- **"What hyperparameters should I try?"** → Automatic recommendations
-
-### For Researchers
-- Reproduce classic gradient problems (vanishing/exploding) with controlled experiments
-- Benchmark initialization schemes, activation functions, and normalization techniques
-- Generate publication-ready visualizations
-
----
-
-## 🛠️ Features
-
-### Current (v0.1.0)
-- ✅ PyTorch-native gradient tracking
-- ✅ Automatic detection of vanishing/exploding gradients
-- ✅ Multi-layer histogram visualization
-- ✅ Comparison across activation functions (Sigmoid, Tanh, ReLU, etc.)
-- ✅ Initialization scheme benchmarking
-
-### Coming Soon (Phase 2-5)
-- 🚧 Real-time training dashboard (Streamlit/TensorBoard)
-- 🚧 Transformer-specific diagnostics (attention entropy, FFN saturation)
-- 🚧 Distributed training support (FSDP, DeepSpeed)
-- 🚧 Automatic hyperparameter recommendations
-- 🚧 Cost optimization analysis ("Save 20 GPU-hours with these settings")
-
----
-
-## 📊 Example: Reproducing Gradient Vanishing
+### Advanced Analysis (Phase 3)
 
 ```python
-from gradient_pathology.experiments import compare_activations
+from gradient_pathology.advanced import LRFinder, HessianAnalyzer
 
-# Compare sigmoid vs ReLU in a 50-layer network
-results = compare_activations(
-    depth=50,
-    activations=['sigmoid', 'relu'],
-    samples=1000
-)
+# Find optimal learning rate
+lr_finder = LRFinder(model, optimizer)
+lrs, losses = lr_finder.range_test(dataloader, loss_fn)
+suggested_lr = lr_finder.suggest_lr(lrs, losses)
 
-results.plot()  # Generates publication-ready figures
+# Analyze loss landscape
+hessian = HessianAnalyzer(model)
+results = hessian.compute_hessian_eigenvalues(dataloader, loss_fn)
+print(hessian.diagnose_sharpness(results['eigenvalues']))
 ```
-
-**Output:**
-- Sigmoid: Mean gradient @ layer 50 = `1.2e-9` ❌ (vanishing)
-- ReLU: Mean gradient @ layer 50 = `0.32` ✅ (healthy)
 
 ---
 
-## 🎓 Educational Use Cases
+## 🚀 Features
 
-Perfect for:
-- **ML course projects**: Demonstrate gradient flow concepts visually
-- **Research onboarding**: Quickly understand why classic architectures (pre-ResNet) struggled with depth
-- **Interview prep**: "Can you explain gradient vanishing?" → Show working code
+### Phase 1: Core Analysis
+- ✅ Automatic gradient pathology detection
+- ✅ Layer-wise statistics and visualization
+- ✅ Actionable recommendations
+
+### Phase 2: Real-time Monitoring
+- ✅ Streamlit dashboard
+- ✅ Training loop callbacks
+- ✅ Live gradient flow tracking
+
+### Phase 3: Advanced Analysis (NEW)
+- ✅ **Learning Rate Finder** - Automatic LR discovery
+- ✅ **Hessian Analysis** - Loss landscape insights
+- ✅ **Transformer Diagnostics** - Attention entropy, FFN saturation
+- 🚧 HuggingFace integration (coming)
+- 🚧 PyTorch Lightning callbacks (coming)
+
+---
+
+## 📊 Example: LR Finder
+
+```python
+from gradient_pathology.advanced import LRFinder
+
+lr_finder = LRFinder(model, optimizer)
+lrs, losses = lr_finder.range_test(
+    dataloader,
+    loss_fn,
+    start_lr=1e-7,
+    end_lr=10,
+    num_iter=100
+)
+
+# Visualize
+lr_finder.plot(lrs, losses)
+
+# Get recommendation
+optimal_lr = lr_finder.suggest_lr(lrs, losses)
+print(f"Suggested LR: {optimal_lr:.2e}")
+```
+
+---
+
+## 🎓 Use Cases
+
+### For ML Engineers
+- **Debug training failures** in production models
+- **Optimize hyperparameters** with LR finder
+- **Monitor gradient health** during long training runs
+
+### For Researchers
+- **Analyze loss landscapes** with Hessian eigenvalues
+- **Diagnose Transformer issues** (attention collapse, FFN saturation)
+- **Generate publication-quality** gradient flow visualizations
+
+### For Students
+- **Visualize gradient problems** in real-time
+- **Understand optimization** through interactive demos
+- **Build intuition** for deep learning pathologies
 
 ---
 
 ## 🏗️ Project Evolution
 
-| Stage | Description | Status |
+| Phase | Description | Status |
 |-------|-------------|--------|
-| **Phase 0** (2023) | High school exploration: TensorFlow script | ✅ Complete |
-| **Phase 1** (2025) | Modern foundation: PyTorch, packaging, CI/CD | 🚧 In Progress |
-| **Phase 2** | Real-time diagnostics: Dashboard, monitoring | 📅 Planned |
-| **Phase 3** | Research-grade: Advanced analysis, reproducibility | 📅 Planned |
-| **Phase 4** | Ecosystem integration: HuggingFace, Lightning | 📅 Planned |
-| **Phase 5** | LLM-era specialization: Transformer diagnostics | 📅 Planned |
+| **Phase 0** (2023) | High school exploration | ✅ Complete |
+| **Phase 1** (2025) | PyTorch foundation | ✅ Complete |
+| **Phase 2** | Real-time dashboard | ✅ Complete |
+| **Phase 3** | Advanced analysis | 🚧 **In Progress** |
+| Phase 4 | Ecosystem integration | 📅 Planned |
+| Phase 5 | LLM-era specialization | 📅 Planned |
+
+---
+
+## 🚀 Advanced Features
+
+### 1. Hessian Analyzer
+
+Understand your loss landscape:
+
+```python
+from gradient_pathology.advanced import HessianAnalyzer
+
+analyzer = HessianAnalyzer(model)
+results = analyzer.compute_hessian_eigenvalues(dataloader, loss_fn)
+
+print(f"Max eigenvalue: {results['max_eigenvalue']:.2e}")
+print(f"Effective rank: {results['effective_rank']}")
+print(analyzer.diagnose_sharpness(results['eigenvalues']))
+# Output: "FLAT_MINIMUM (Good generalization expected)"
+```
+
+### 2. Transformer Diagnostics
+
+Specialized analysis for Transformers:
+
+```python
+from gradient_pathology.advanced import TransformerDiagnostics
+
+diag = TransformerDiagnostics(transformer_model)
+
+# Analyze attention
+entropy = diag.analyze_attention_entropy(attention_weights)
+if diag.detect_attention_collapse():
+    print("⚠️ Attention collapse detected!")
+
+# Check FFN saturation
+saturation = diag.analyze_ffn_saturation(ffn_activations)
+print(f"FFN saturation: {saturation:.1%}")
+```
+
+---
+
+## 📚 Documentation
+
+See `/examples` for:
+- `advanced_analysis_demo.py` - Full demo of Phase 3 features
+- `dashboard_demo.py` - Interactive dashboard
+- `realtime_monitor.py` - Training loop integration
 
 ---
 
 ## 🤝 Contributing
 
-This project welcomes contributions from students, researchers, and engineers!
-
-### Development Setup
-
-```bash
-git clone https://github.com/sinsangwoo/Why_Isnt_It_Learning.git
-cd Why_Isnt_It_Learning
-pip install -e ".[dev]"
-pytest  # Run tests
-```
-
-### Roadmap Priorities
-1. Transformer-specific diagnostics (help wanted!)
-2. Web dashboard (Streamlit contributors welcome)
-3. Additional language support (currently English/Korean)
-
----
-
-## 📚 Technical Background
-
-### Why Gradients Matter
-
-In deep learning, backpropagation computes gradients layer-by-layer. When networks are too deep or use problematic activation functions:
-- **Vanishing gradients**: Gradients → 0, early layers don't learn
-- **Exploding gradients**: Gradients → ∞, training diverges
-
-This tool makes these invisible problems visible.
-
-### Classic Solutions We Benchmark
-- Initialization: Xavier/He
-- Activations: ReLU family, GELU
-- Normalization: BatchNorm, LayerNorm
-- Architecture: Skip connections (ResNet), attention (Transformers)
+Welcome contributions in:
+- HuggingFace Transformers integration
+- Additional Transformer diagnostics
+- PyTorch Lightning callbacks
+- Documentation improvements
 
 ---
 
 ## 📖 Citation
-
-If you use this tool in research, please cite:
 
 ```bibtex
 @software{gradient_pathology2025,
@@ -177,25 +216,9 @@ If you use this tool in research, please cite:
 
 ---
 
-## 🙏 Acknowledgments
-
-- Original inspiration: CS231n (Stanford), Coursera Deep Learning Specialization
-- Built with: PyTorch, NumPy, Matplotlib
-- Community: Thanks to everyone who asked "왜 학습이 안 돼요?" on forums
-
----
-
 ## 📄 License
 
-MIT License - Feel free to use in research, education, or production.
-
----
-
-## 🔗 Links
-
-- [Documentation](https://github.com/sinsangwoo/Why_Isnt_It_Learning/wiki) (coming soon)
-- [Issue Tracker](https://github.com/sinsangwoo/Why_Isnt_It_Learning/issues)
-- [Changelog](CHANGELOG.md)
+MIT License - Free for research, education, and production.
 
 ---
 
