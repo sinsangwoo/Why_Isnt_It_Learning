@@ -7,9 +7,7 @@ from gradient_pathology.benchmark.runner import BenchmarkRunner
 
 def main() -> None:
     """Run benchmark suite."""
-    parser = argparse.ArgumentParser(
-        description="Run gradient pathology benchmarks"
-    )
+    parser = argparse.ArgumentParser(description="Run gradient pathology benchmarks")
     parser.add_argument(
         "--device",
         default="cpu",

@@ -1,6 +1,6 @@
-"""Benchmarking module for reproducible experiments."""
+"""Benchmarking and reproducibility module."""
 
-from gradient_pathology.benchmark.runner import BenchmarkRunner
+from gradient_pathology.benchmark.runner import BenchmarkConfig, BenchmarkRunner
 from gradient_pathology.benchmark.tracker import ExperimentTracker
 
-__all__ = ["BenchmarkRunner", "ExperimentTracker"]
+__all__ = ["BenchmarkConfig", "BenchmarkRunner", "ExperimentTracker"]

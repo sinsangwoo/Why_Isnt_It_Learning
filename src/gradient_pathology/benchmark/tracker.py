@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 try:
     import mlflow
+
     MLFLOW_AVAILABLE = True
 except ImportError:
     MLFLOW_AVAILABLE = False
@@ -19,7 +20,7 @@ class ExperimentTracker:
         experiment_name: str = "gradient-pathology",
         tracking_uri: Optional[str] = None,
         use_mlflow: bool = True,
-    ):
+    ) -> None:
         self.experiment_name = experiment_name
         self.use_mlflow = use_mlflow and MLFLOW_AVAILABLE
         
@@ -31,13 +32,14 @@ class ExperimentTracker:
             # Fallback to local JSON tracking
             self.log_dir = Path("experiments") / experiment_name
             self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.current_run_data: Dict[str, Any] = {}
 
     def start_run(self, run_name: Optional[str] = None) -> None:
         """Start new experiment run."""
         if self.use_mlflow:
             mlflow.start_run(run_name=run_name)
         else:
-            self.current_run_data: Dict[str, Any] = {}
+            self.current_run_data = {}
 
     def log_params(self, params: Dict[str, Any]) -> None:
         """Log experiment parameters."""
@@ -46,17 +48,16 @@ class ExperimentTracker:
         else:
             self.current_run_data["params"] = params
 
-    def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
+    def log_metrics(
+        self, metrics: Dict[str, float], step: Optional[int] = None
+    ) -> None:
         """Log experiment metrics."""
         if self.use_mlflow:
             mlflow.log_metrics(metrics, step=step)
         else:
             if "metrics" not in self.current_run_data:
                 self.current_run_data["metrics"] = []
-            self.current_run_data["metrics"].append({
-                "step": step,
-                "values": metrics,
-            })
+            self.current_run_data["metrics"].append({"step": step, "values": metrics})
 
     def log_artifact(self, artifact_path: str) -> None:
         """Log artifact file."""
@@ -65,6 +66,7 @@ class ExperimentTracker:
         else:
             # Copy to log directory
             import shutil
+
             dest = self.log_dir / Path(artifact_path).name
             shutil.copy(artifact_path, dest)
 
@@ -75,6 +77,7 @@ class ExperimentTracker:
         else:
             # Save to JSON
             import time
+
             filename = f"run_{int(time.time())}.json"
             with open(self.log_dir / filename, "w") as f:
                 json.dump(self.current_run_data, f, indent=2)

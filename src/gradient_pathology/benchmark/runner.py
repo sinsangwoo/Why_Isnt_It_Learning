@@ -1,8 +1,8 @@
-"""Benchmark runner for standardized experiments."""
+"""Benchmark runner for reproducible experiments."""
 
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
@@ -27,9 +27,9 @@ class BenchmarkConfig:
 class BenchmarkRunner:
     """Run standardized benchmark experiments."""
 
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, device: str = "cpu") -> None:
         self.device = device
-        self.results: List[Dict] = []
+        self.results: List[Dict[str, Any]] = []
 
     def run_benchmark(
         self,
@@ -62,7 +62,7 @@ class BenchmarkRunner:
         elapsed_time = time.time() - start_time
         
         # Store results
-        result = {
+        result: Dict[str, Any] = {
             "config": config,
             "report": report,
             "elapsed_time": elapsed_time,
@@ -128,7 +128,7 @@ class BenchmarkRunner:
             ),
         ]
         
-        results = {}
+        results: Dict[str, GradientReport] = {}
         for config in configs:
             print(f"Running benchmark: {config.model_name}...")
             report = self.run_benchmark(config)
@@ -151,11 +151,15 @@ class BenchmarkRunner:
             elapsed = result["elapsed_time"]
             
             lines.append(f"\n{config.model_name}:")
-            lines.append(f"  Configuration: {config.num_layers} layers, "
-                        f"{config.activation}, "
-                        f"norm={config.use_normalization}")
+            lines.append(
+                f"  Configuration: {config.num_layers} layers, "
+                f"{config.activation}, "
+                f"norm={config.use_normalization}"
+            )
             lines.append(f"  Analysis time: {elapsed:.2f}s")
-            lines.append(f"  Global gradient: mean={report.global_mean:.2e}, "
-                        f"std={report.global_std:.2e}")
+            lines.append(
+                f"  Global gradient: mean={report.global_mean:.2e}, "
+                f"std={report.global_std:.2e}"
+            )
         
         return "\n".join(lines)

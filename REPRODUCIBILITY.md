@@ -1,6 +1,6 @@
 # Reproducibility Checklist
 
-This document ensures that experiments using Gradient Pathology are fully reproducible.
+This document ensures experiments using Gradient Pathology are fully reproducible.
 
 ## Environment Setup
 
@@ -130,37 +130,6 @@ The standard suite includes:
    
 5. **deep_gelu_with_norm**: 20 layers, GELU, with LayerNorm
    - Expected: Healthy gradients
-
-## Verification
-
-### Checksum Verification
-
-```python
-import hashlib
-import json
-
-# Generate checksum of experiment results
-result_json = json.dumps(results, sort_keys=True)
-checksum = hashlib.sha256(result_json.encode()).hexdigest()
-print(f"Experiment checksum: {checksum}")
-```
-
-### Result Comparison
-
-```python
-# Compare two experiment runs
-def compare_reports(report1, report2, tolerance=1e-6):
-    """Compare two gradient reports."""
-    mean_diff = abs(report1.global_mean - report2.global_mean)
-    std_diff = abs(report1.global_std - report2.global_std)
-    
-    if mean_diff < tolerance and std_diff < tolerance:
-        print("✓ Results match within tolerance")
-        return True
-    else:
-        print(f"✗ Results differ: mean_diff={mean_diff}, std_diff={std_diff}")
-        return False
-```
 
 ## Publication Checklist
 
