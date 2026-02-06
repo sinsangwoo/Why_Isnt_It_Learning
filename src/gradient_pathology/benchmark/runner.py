@@ -17,7 +17,7 @@ class BenchmarkConfig:
 
     model_name: str
     num_layers: int
-    hidden_dim: int
+    hidden_size: int  # Changed from hidden_dim to match experiments.py
     activation: str
     use_normalization: bool
     num_diagnostic_steps: int = 100
@@ -57,7 +57,7 @@ class BenchmarkRunner:
         start_time = time.time()
         report = analyzer.diagnose(
             num_steps=config.num_diagnostic_steps,
-            input_shape=(config.hidden_dim,),
+            input_shape=(config.hidden_size,),
         )
         elapsed_time = time.time() - start_time
         
@@ -77,11 +77,11 @@ class BenchmarkRunner:
         from gradient_pathology.experiments import create_deep_network
         
         return create_deep_network(
-            input_dim=config.hidden_dim,
-            hidden_dim=config.hidden_dim,
-            num_layers=config.num_layers,
+            input_size=config.hidden_size,
+            hidden_size=config.hidden_size,
+            depth=config.num_layers,
             activation=config.activation,
-            use_normalization=config.use_normalization,
+            normalization=config.use_normalization,
         )
 
     def run_standard_suite(self) -> Dict[str, GradientReport]:
@@ -94,35 +94,35 @@ class BenchmarkRunner:
             BenchmarkConfig(
                 model_name="shallow_relu",
                 num_layers=3,
-                hidden_dim=64,
+                hidden_size=64,
                 activation="relu",
                 use_normalization=False,
             ),
             BenchmarkConfig(
                 model_name="deep_relu_no_norm",
                 num_layers=20,
-                hidden_dim=64,
+                hidden_size=64,
                 activation="relu",
                 use_normalization=False,
             ),
             BenchmarkConfig(
                 model_name="deep_relu_with_norm",
                 num_layers=20,
-                hidden_dim=64,
+                hidden_size=64,
                 activation="relu",
                 use_normalization=True,
             ),
             BenchmarkConfig(
                 model_name="deep_sigmoid",
                 num_layers=30,
-                hidden_dim=64,
+                hidden_size=64,
                 activation="sigmoid",
                 use_normalization=False,
             ),
             BenchmarkConfig(
                 model_name="deep_gelu_with_norm",
                 num_layers=20,
-                hidden_dim=64,
+                hidden_size=64,
                 activation="gelu",
                 use_normalization=True,
             ),
