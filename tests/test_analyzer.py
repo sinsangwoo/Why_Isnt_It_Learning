@@ -9,7 +9,6 @@ from gradient_pathology.core import GradientPathology
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_analyzer_basic() -> None:
-    """Test basic analyzer functionality."""
     model = nn.Sequential(
         nn.Linear(10, 32),
         nn.ReLU(),
@@ -26,24 +25,23 @@ def test_analyzer_basic() -> None:
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_vanishing_gradient_detection() -> None:
-    """Test detection of gradient pathologies in deep networks."""
     model = nn.Sequential(
-        *[nn.Linear(64, 64), nn.Sigmoid()] * 50,
+        *[nn.Linear(64, 64), nn.Sigmoid()] * 100,
         nn.Linear(64, 1),
     )
     
     analyzer = GradientAnalyzer(model, device="cpu")
-    report = analyzer.diagnose(num_steps=20, input_shape=(64,))
+    report = analyzer.diagnose(num_steps=50, input_shape=(64,))
     
-    all_healthy = all(
-        stats.diagnose() == GradientPathology.HEALTHY for stats in report.layer_stats
+    pathological_count = sum(
+        1 for stats in report.layer_stats
+        if stats.diagnose() != GradientPathology.HEALTHY
     )
-    assert not all_healthy
+    assert pathological_count > 0
 
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_healthy_gradient_flow() -> None:
-    """Test that modern architectures show healthy gradients."""
     model = nn.Sequential(
         nn.Linear(32, 64),
         nn.LayerNorm(64),
@@ -66,7 +64,6 @@ def test_healthy_gradient_flow() -> None:
 
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_report_summary() -> None:
-    """Test report summary generation."""
     model = nn.Sequential(
         nn.Linear(10, 32),
         nn.ReLU(),
