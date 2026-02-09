@@ -14,10 +14,10 @@ def test_analyzer_basic() -> None:
         nn.ReLU(),
         nn.Linear(32, 1),
     )
-    
+
     analyzer = GradientAnalyzer(model, device="cpu")
     report = analyzer.diagnose(num_steps=10, input_shape=(10,))
-    
+
     assert len(report.layer_stats) > 0
     assert report.global_mean is not None
     assert report.global_std is not None
@@ -29,10 +29,10 @@ def test_vanishing_gradient_detection() -> None:
         *[nn.Linear(64, 64), nn.Sigmoid()] * 100,
         nn.Linear(64, 1),
     )
-    
+
     analyzer = GradientAnalyzer(model, device="cpu")
     report = analyzer.diagnose(num_steps=50, input_shape=(64,))
-    
+
     pathological_count = sum(
         1 for stats in report.layer_stats
         if stats.diagnose() != GradientPathology.HEALTHY
@@ -51,10 +51,10 @@ def test_healthy_gradient_flow() -> None:
         nn.ReLU(),
         nn.Linear(64, 1),
     )
-    
+
     analyzer = GradientAnalyzer(model, device="cpu")
     report = analyzer.diagnose(num_steps=10, input_shape=(32,))
-    
+
     healthy_count = sum(
         1 for stats in report.layer_stats
         if stats.diagnose() == GradientPathology.HEALTHY
@@ -69,10 +69,10 @@ def test_report_summary() -> None:
         nn.ReLU(),
         nn.Linear(32, 1),
     )
-    
+
     analyzer = GradientAnalyzer(model, device="cpu")
     report = analyzer.diagnose(num_steps=5, input_shape=(10,))
-    
+
     summary = report.summary()
     assert isinstance(summary, str)
     assert len(summary) > 0
