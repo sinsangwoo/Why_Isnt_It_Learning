@@ -1,225 +1,161 @@
 # Gradient Pathology
 
-[![CI](https://github.com/sinsangwoo/Why_Isnt_It_Learning/actions/workflows/ci.yml/badge.svg)](https://github.com/sinsangwoo/Why_Isnt_It_Learning/actions/workflows/ci.yml)
+Production-grade gradient analysis for PyTorch models.
+
+[![CI](https://github.com/sinsangwoo/Why_Isnt_It_Learning/workflows/CI/badge.svg)](https://github.com/sinsangwoo/Why_Isnt_It_Learning/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-orange.svg)](https://pytorch.org/)
 
-> **From high school curiosity to production ML diagnostics**
->
-> *"왜 학습이 안 될까?"라는 고3 시절의 순수한 질문에서 시작해,*  
-> *실전 모델 디버깅에 즉시 쓸 수 있는 자동화 도구로 진화한 프로젝트*
+## Overview
 
----
+Automated detection and diagnosis of gradient pathologies in deep learning models. Supports vanilla networks, transformers, FSDP, and quantized models.
 
-## 🎯 What is this?
-
-**Gradient Pathology** is a PyTorch-based framework for diagnosing training instabilities in deep neural networks. From basic gradient analysis to advanced Hessian insights and Transformer-specific diagnostics.
-
-### The Origin Story
-
-In 2023, as a high school senior, I wondered:
-> *"Can I actually reproduce gradient vanishing and exploding on my own computer?"*
-
-What started as a simple script has evolved into:
-- **Phase 1**: Static gradient analysis
-- **Phase 2**: Real-time monitoring dashboard
-- **Phase 3**: Research-grade advanced analysis (NEW!)
-
----
-
-## ⚡ Quick Start
-
-### Installation
+## Installation
 
 ```bash
 pip install gradient-pathology
 ```
 
-### Basic Usage
+## Quick Start
 
 ```python
-from gradient_pathology import GradientAnalyzer
 import torch.nn as nn
+from gradient_pathology import GradientAnalyzer
 
-# Your model
-model = nn.Sequential(*[nn.Linear(64, 64), nn.ReLU()] * 20)
+model = nn.Sequential(
+    nn.Linear(64, 128),
+    nn.ReLU(),
+    nn.Linear(128, 10),
+)
 
-# Diagnose
 analyzer = GradientAnalyzer(model)
-report = analyzer.diagnose(num_steps=100)
+report = analyzer.diagnose(num_steps=50, input_shape=(64,))
 print(report.summary())
 ```
 
-### Advanced Analysis (Phase 3)
+## Features
+
+### Core Analysis
+- Automatic pathology detection (vanishing, exploding, unstable)
+- Per-layer gradient statistics
+- Real-time training callbacks
+
+### Advanced Tools
+- Learning rate finder
+- Hessian eigenvalue analysis
+- Effective rank computation
+- Gradient flow visualization
+
+### Transformer Support
+- Attention entropy monitoring
+- FFN saturation detection
+- Layer-wise diagnostics
+
+### LLM Features
+- FSDP shard balance analysis
+- Quantization impact measurement (8-bit/4-bit)
+- Distributed training support
+
+### Integration
+- HuggingFace Transformers
+- PyTorch Lightning
+- Ray Tune
+- Streamlit dashboard
+
+### Reproducibility
+- Docker containers
+- MLflow tracking
+- Benchmark suite
+
+## Usage
+
+### Training Integration
 
 ```python
-from gradient_pathology.advanced import LRFinder, HessianAnalyzer
+from gradient_pathology.callbacks import GradientMonitorCallback
 
-# Find optimal learning rate
-lr_finder = LRFinder(model, optimizer)
-lrs, losses = lr_finder.range_test(dataloader, loss_fn)
-suggested_lr = lr_finder.suggest_lr(lrs, losses)
+callback = GradientMonitorCallback(model, check_every_n_steps=100)
 
-# Analyze loss landscape
-hessian = HessianAnalyzer(model)
-results = hessian.compute_hessian_eigenvalues(dataloader, loss_fn)
-print(hessian.diagnose_sharpness(results['eigenvalues']))
+for epoch in range(num_epochs):
+    for batch in dataloader:
+        loss = train_step(batch)
+        callback.on_batch_end(optimizer)
 ```
 
----
+### Real-time Dashboard
 
-## 🚀 Features
+```bash
+streamlit run gradient_pathology/dashboard.py
+```
 
-### Phase 1: Core Analysis
-- ✅ Automatic gradient pathology detection
-- ✅ Layer-wise statistics and visualization
-- ✅ Actionable recommendations
-
-### Phase 2: Real-time Monitoring
-- ✅ Streamlit dashboard
-- ✅ Training loop callbacks
-- ✅ Live gradient flow tracking
-
-### Phase 3: Advanced Analysis (NEW)
-- ✅ **Learning Rate Finder** - Automatic LR discovery
-- ✅ **Hessian Analysis** - Loss landscape insights
-- ✅ **Transformer Diagnostics** - Attention entropy, FFN saturation
-- 🚧 HuggingFace integration (coming)
-- 🚧 PyTorch Lightning callbacks (coming)
-
----
-
-## 📊 Example: LR Finder
+### LR Finder
 
 ```python
 from gradient_pathology.advanced import LRFinder
 
-lr_finder = LRFinder(model, optimizer)
-lrs, losses = lr_finder.range_test(
-    dataloader,
-    loss_fn,
-    start_lr=1e-7,
-    end_lr=10,
-    num_iter=100
-)
-
-# Visualize
-lr_finder.plot(lrs, losses)
-
-# Get recommendation
-optimal_lr = lr_finder.suggest_lr(lrs, losses)
-print(f"Suggested LR: {optimal_lr:.2e}")
+finder = LRFinder(model, optimizer)
+suggested_lr = finder.find(dataloader, loss_fn)
 ```
 
----
-
-## 🎓 Use Cases
-
-### For ML Engineers
-- **Debug training failures** in production models
-- **Optimize hyperparameters** with LR finder
-- **Monitor gradient health** during long training runs
-
-### For Researchers
-- **Analyze loss landscapes** with Hessian eigenvalues
-- **Diagnose Transformer issues** (attention collapse, FFN saturation)
-- **Generate publication-quality** gradient flow visualizations
-
-### For Students
-- **Visualize gradient problems** in real-time
-- **Understand optimization** through interactive demos
-- **Build intuition** for deep learning pathologies
-
----
-
-## 🏗️ Project Evolution
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| **Phase 0** (2023) | High school exploration | ✅ Complete |
-| **Phase 1** (2025) | PyTorch foundation | ✅ Complete |
-| **Phase 2** | Real-time dashboard | ✅ Complete |
-| **Phase 3** | Advanced analysis | 🚧 **In Progress** |
-| Phase 4 | Ecosystem integration | 📅 Planned |
-| Phase 5 | LLM-era specialization | 📅 Planned |
-
----
-
-## 🚀 Advanced Features
-
-### 1. Hessian Analyzer
-
-Understand your loss landscape:
+### Expert System
 
 ```python
-from gradient_pathology.advanced import HessianAnalyzer
+from gradient_pathology.expert import ExpertSystem
 
-analyzer = HessianAnalyzer(model)
-results = analyzer.compute_hessian_eigenvalues(dataloader, loss_fn)
-
-print(f"Max eigenvalue: {results['max_eigenvalue']:.2e}")
-print(f"Effective rank: {results['effective_rank']}")
-print(analyzer.diagnose_sharpness(results['eigenvalues']))
-# Output: "FLAT_MINIMUM (Good generalization expected)"
+expert = ExpertSystem()
+diagnoses = expert.diagnose_architecture(model, gradient_stats)
+print(expert.generate_report())
 ```
 
-### 2. Transformer Diagnostics
-
-Specialized analysis for Transformers:
+### FSDP Analysis
 
 ```python
-from gradient_pathology.advanced import TransformerDiagnostics
+from gradient_pathology.llm import FSDPAnalyzer
 
-diag = TransformerDiagnostics(transformer_model)
-
-# Analyze attention
-entropy = diag.analyze_attention_entropy(attention_weights)
-if diag.detect_attention_collapse():
-    print("⚠️ Attention collapse detected!")
-
-# Check FFN saturation
-saturation = diag.analyze_ffn_saturation(ffn_activations)
-print(f"FFN saturation: {saturation:.1%}")
+analyzer = FSDPAnalyzer(fsdp_model)
+balance = analyzer.check_shard_balance()
 ```
 
----
+## Documentation
 
-## 📚 Documentation
+- [Quick Start Guide](docs/quickstart.md)
+- [API Reference](docs/api/)
+- [Tutorials](docs/tutorials/)
+- [Case Studies](docs/casestudies/)
 
-See `/examples` for:
-- `advanced_analysis_demo.py` - Full demo of Phase 3 features
-- `dashboard_demo.py` - Interactive dashboard
-- `realtime_monitor.py` - Training loop integration
+## Benchmarks
 
----
+```bash
+python -m gradient_pathology.benchmark --device cpu
+```
 
-## 🤝 Contributing
+## Development
 
-Welcome contributions in:
-- HuggingFace Transformers integration
-- Additional Transformer diagnostics
-- PyTorch Lightning callbacks
-- Documentation improvements
+```bash
+git clone https://github.com/sinsangwoo/Why_Isnt_It_Learning.git
+cd Why_Isnt_It_Learning
+pip install -e ".[dev]"
+pytest tests/
+```
 
----
+## Docker
 
-## 📖 Citation
+```bash
+docker build -t gradient-pathology .
+docker run gradient-pathology
+```
+
+## Citation
 
 ```bibtex
-@software{gradient_pathology2025,
-  author = {Sin, Sangwoo},
-  title = {Gradient Pathology: From High School Curiosity to Production ML Diagnostics},
-  year = {2025},
-  url = {https://github.com/sinsangwoo/Why_Isnt_It_Learning}
+@software{gradient_pathology,
+  title={Gradient Pathology: Automated Gradient Analysis for PyTorch},
+  author={Sin, Sangwoo},
+  year={2025},
+  url={https://github.com/sinsangwoo/Why_Isnt_It_Learning}
 }
 ```
 
----
+## License
 
-## 📄 License
-
-MIT License - Free for research, education, and production.
-
----
-
-**Built with curiosity 🔬 | Maintained with pragmatism 🛠️**
+MIT
