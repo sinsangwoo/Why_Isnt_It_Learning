@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gradient-pathology"
-version = "0.5.0"
+version = "0.6.0"
 description = "Automated gradient pathology detection and analysis"
 authors = [{name = "Sangwoo Sin"}]
 requires-python = ">=3.9"
@@ -16,7 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dashboard = ["streamlit>=1.20.0"]
+dashboard = [
+    "streamlit>=1.20.0",
+    "plotly>=5.14.0",
+]
 storage = ["pandas>=1.5.0", "pyarrow>=12.0.0"]
 dev = [
     "pytest>=7.0.0",
@@ -25,6 +28,8 @@ dev = [
     "ruff>=0.1.0",
     "pandas>=1.5.0",
     "pyarrow>=12.0.0",
+    "plotly>=5.14.0",
+    "networkx>=3.0",
 ]
 
 [tool.mypy]
@@ -51,6 +56,8 @@ module = [
     "pandas.*",
     "pyarrow",
     "pyarrow.*",
+    "plotly",
+    "plotly.*",
 ]
 ignore_errors = true
 ignore_missing_imports = true

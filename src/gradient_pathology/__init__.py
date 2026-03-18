@@ -11,8 +11,9 @@ from gradient_pathology.pipeline import (
     GradientSnapshotStore,
     TransformerLayerClassifier,
 )
+from gradient_pathology.heatmap import GradientHeatmapRenderer
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = [
     "GradientAnalyzer",
     "GradientReport",
@@ -23,4 +24,6 @@ __all__ = [
     # Phase-1 pipeline
     "TransformerLayerClassifier",
     "GradientSnapshotStore",
+    # Phase-2 heatmap
+    "GradientHeatmapRenderer",
 ]

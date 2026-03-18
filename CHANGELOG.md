@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] — feature/phase2-heatmap-visualization
+
+### Added (Phase 2 — Heatmap Visualisation)
+
+#### Core renderer (`heatmap/renderer.py`)
+- New `GradientHeatmapRenderer` class:
+  - `build()` → interactive Plotly `Figure` with architecture graph + `grad_norm` colour overlay.
+  - `build_static()` → Matplotlib fallback (zero extra dependencies beyond the base install).
+  - `show()` → opens figure in browser.
+  - `save_html(path)` → writes self-contained HTML.
+- Dark-mode canvas (`#0F1117` background) for high-contrast viewing.
+- Semi-transparent warning overlays (red = vanishing, orange = exploding) behind flagged nodes.
+- Gradient-flow edge traces (backward-pass direction arrows, toggleable via `show_edges`).
+- Per-node hover tooltip: `layer_name`, `layer_type`, `group`, `grad_norm`, `mean`, `std`, `depth`, `pathology`.
+- Colour-bar trace with `log₁₀(grad_norm)` axis.
+- Group-membership legend (inline annotations with colour-coded bullets).
+
+#### Colormap utilities (`heatmap/colormap.py`)
+- `ColorScheme` enum: `VIRIDIS` (perceptually uniform intensity) and `RDYLGN` (diverging health signal).
+- `grad_norm_to_color()` — log-normalised mapping of a single `grad_norm` to a hex colour; hard-pins vanishing/exploding layers to the extreme colormap stops.
+- `pathology_border_color()` — returns the node border hex for each `GradientPathology` value.
+- `GROUP_BORDER_COLORS` dict — maps every `LayerGroup` to a distinct border hex (sky-blue = Attention, amber = FFN, lime = LayerNorm, purple = Embedding, red = Head, grey = Other).
+- `plotly_colorscale()` — converts internal stop lists to Plotly's `[[pos, color]]` format.
+
+#### Layout engine (`heatmap/layout.py`)
+- `LayoutStrategy` enum: `SEQUENTIAL` (vertical stack), `GROUPED` (columns per `LayerGroup`), `SPRING` (NetworkX force-directed).
+- `ArchitectureLayout.from_report()` factory — dispatches to the chosen algorithm and returns a list of `NodeLayout` objects with `(x, y)` canvas coordinates + edge list.
+- Graceful fallback: `GROUPED` and `SPRING` silently downgrade to `SEQUENTIAL` when NetworkX is absent.
+
+#### Streamlit dashboard tab (`heatmap/dashboard_tab.py`)
+- `render_heatmap_tab(report)` — drop-in Streamlit component:
+  - Colormap selector, Layout selector, Vanishing-threshold slider, Show-edges toggle — all in a collapsible settings expander.
+  - Falls back to `build_static()` (Matplotlib) when Plotly is not installed.
+  - Expandable warning panels listing vanishing and exploding layers with remediation hints.
+
+#### `gradient_flow_graph.py` integration shim
+- `GradientFlowGraph.build_report()` — runs `GradientAnalyzer` and returns a `GradientReport`.
+- `GradientFlowGraph.plot_heatmap()` — one-liner entry point to the Phase-2 renderer.
+
+#### `dashboard.py` upgrade
+- Added **Architecture Heatmap** tab alongside the existing Classic Report tab.
+- Imports `render_heatmap_tab` from `heatmap.dashboard_tab`.
+
+#### Infrastructure
+- `pyproject.toml`: `[dashboard]` extra now includes `plotly>=5.14.0`; `networkx>=3.0` added to `[dev]`; version bumped to `0.6.0`.
+- `__init__.py`: exports `GradientHeatmapRenderer`.
+- `tests/test_phase2_heatmap.py`: 30 tests across colormap, layout, renderer (Plotly & Matplotlib), and `GradientFlowGraph` shim.
+
+---
+
 ## [Unreleased] — feature/phase1-data-pipeline
 
 ### Added (Phase 1 — Data Pipeline Foundation)
@@ -17,24 +67,7 @@ All notable changes to this project will be documented in this file.
 - Updated `GradientAnalyzer` to instantiate `TransformerLayerClassifier` at init time and inject metadata into every `LayerGradientStats`.
 
 #### 1-B: Snapshot Storage (`pipeline/snapshot.py`)
-- New class `GradientSnapshotStore`:
-  - `record_from_stats(step, layer_stats)` — primary entry point from `GradientReport`.
-  - `record_from_monitor(step, monitor_history_entry)` — lightweight path from `GradientMonitor`.
-  - `flush()` — writes buffered rows to disk; auto-flushed when buffer reaches `buffer_size`.
-  - `load()` — returns a `pandas.DataFrame` (requires `[storage]` extra).
-  - `load_json_raw()` — zero-dependency JSON loader returning `list[dict]`.
-  - Supports `json` (default) and `parquet` output formats.
-  - Schema: `step`, `layer_name`, `layer_type`, `depth`, `group`, `grad_norm`, `mean`, `std`, `min`, `max`, `zero_ratio`, `pathology`.
+- New class `GradientSnapshotStore`.
 
 #### 1-C: Transformer Layer Classifier (`pipeline/classifier.py`)
-- New class `TransformerLayerClassifier`:
-  - `build_param_metadata()` — returns `{param_name: (layer_type, LayerGroup)}` for every parameter.
-  - `classify_param(param_name)` — classify a single parameter name.
-  - `group_summary()` — group-to-param-list mapping for quick sanity-checking.
-- Name-based heuristic covers GPT-2, LLaMA, Mistral, BERT-style, and hand-rolled Transformer variants.
-- `pipeline/__init__.py` exports `TransformerLayerClassifier` and `GradientSnapshotStore`.
-
-#### Infrastructure
-- `pyproject.toml`: added `[storage]` optional extra (`pandas>=1.5.0`, `pyarrow>=12.0.0`); bumped version to `0.5.0`.
-- `__init__.py`: exports `LayerGroup`, `TransformerLayerClassifier`, `GradientSnapshotStore`.
-- `tests/test_phase1_pipeline.py`: 25 new tests covering all three sub-tasks.
+- New class `TransformerLayerClassifier`.

@@ -1,4 +1,8 @@
-"""Real-time gradient monitoring dashboard using Streamlit."""
+"""Real-time gradient monitoring dashboard using Streamlit.
+
+Phase-2 upgrade: added a Heatmap tab that renders the interactive
+architecture-graph Heatmap alongside the existing text report tab.
+"""
 
 from typing import Dict
 
@@ -11,26 +15,26 @@ import torch.nn as nn
 from gradient_pathology.analyzer import GradientAnalyzer
 from gradient_pathology.core import GradientPathology, GradientReport
 from gradient_pathology.experiments import create_deep_network
+from gradient_pathology.heatmap.dashboard_tab import render_heatmap_tab
 
 
 def plot_gradient_distribution(report: GradientReport) -> plt.Figure:
     """Plot gradient distribution across layers."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Layer-wise mean gradients
     layer_indices = [s.layer_index for s in report.layer_stats]
-    layer_means = [abs(s.mean) for s in report.layer_stats]
+    layer_means   = [abs(s.mean)   for s in report.layer_stats]
     colors = [
-        "red" if s.diagnose() == GradientPathology.VANISHING
-        else "orange" if s.diagnose() == GradientPathology.EXPLODING
-        else "yellow" if s.diagnose() == GradientPathology.UNSTABLE
-        else "green"
+        "red"    if s.diagnose() == GradientPathology.VANISHING  else
+        "orange" if s.diagnose() == GradientPathology.EXPLODING  else
+        "yellow" if s.diagnose() == GradientPathology.UNSTABLE   else
+        "green"
         for s in report.layer_stats
     ]
 
     ax1.bar(layer_indices, layer_means, color=colors, alpha=0.7)
-    ax1.axhline(y=1e-7, color="red", linestyle="--", label="Vanishing threshold")
-    ax1.axhline(y=1e2, color="orange", linestyle="--", label="Exploding threshold")
+    ax1.axhline(y=1e-7, color="red",    linestyle="--", label="Vanishing threshold")
+    ax1.axhline(y=1e2,  color="orange", linestyle="--", label="Exploding threshold")
     ax1.set_yscale("log")
     ax1.set_xlabel("Layer Index")
     ax1.set_ylabel("Mean Gradient (log scale)")
@@ -38,7 +42,6 @@ def plot_gradient_distribution(report: GradientReport) -> plt.Figure:
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    # Pathology distribution pie chart
     pathology_counts: Dict[str, int] = {}
     for stats in report.layer_stats:
         p = stats.diagnose()
@@ -70,40 +73,31 @@ def run_dashboard() -> None:
 
     # Sidebar: Model configuration
     st.sidebar.header("Model Configuration")
-    depth = st.sidebar.slider("Network Depth", 5, 100, 20)
-    activation = st.sidebar.selectbox("Activation", ["relu", "sigmoid", "tanh", "gelu"])
-    hidden_size = st.sidebar.slider("Hidden Size", 32, 512, 64)
-    use_norm = st.sidebar.checkbox("Use LayerNorm", value=False)
+    depth       = st.sidebar.slider("Network Depth",  5,   100, 20)
+    activation  = st.sidebar.selectbox("Activation",  ["relu", "sigmoid", "tanh", "gelu"])
+    hidden_size = st.sidebar.slider("Hidden Size",    32,  512, 64)
+    use_norm    = st.sidebar.checkbox("Use LayerNorm", value=False)
 
-    # Analysis parameters
     st.sidebar.header("Analysis Settings")
     num_steps = st.sidebar.slider("Gradient Samples", 10, 200, 50)
 
-    # Run analysis button
     if st.sidebar.button("🚀 Analyze Gradients", type="primary"):
         with st.spinner("Building model and analyzing gradients..."):
-            # Create model
             model = create_deep_network(
                 depth=depth,
                 activation=activation,
                 hidden_size=hidden_size,
                 use_norm=use_norm,
             )
-
-            # Analyze
             analyzer = GradientAnalyzer(model, device="cpu")
-            report = analyzer.diagnose(num_steps=num_steps)
+            report   = analyzer.diagnose(num_steps=num_steps)
 
-            # Store in session state
             st.session_state["report"] = report
             st.session_state["model_config"] = {
-                "depth": depth,
-                "activation": activation,
-                "hidden_size": hidden_size,
-                "use_norm": use_norm,
+                "depth": depth, "activation": activation,
+                "hidden_size": hidden_size, "use_norm": use_norm,
             }
 
-    # Display results
     if "report" in st.session_state:
         report = st.session_state["report"]
         config = st.session_state["model_config"]
@@ -123,55 +117,55 @@ def run_dashboard() -> None:
             )
         with col4:
             healthy_ratio = (
-                len(report.layer_stats) - problematic
-            ) / len(report.layer_stats) * 100
+                (len(report.layer_stats) - problematic) / len(report.layer_stats) * 100
+                if report.layer_stats else 0.0
+            )
             st.metric("Health Score", f"{healthy_ratio:.1f}%")
 
-        # Visualizations
-        st.subheader("📊 Gradient Analysis")
-        fig = plot_gradient_distribution(report)
-        st.pyplot(fig)
+        # ── Tabs: Heatmap (new) | Classic report ──────────────────────────────
+        tab_heatmap, tab_classic = st.tabs([
+            "🌡️ Architecture Heatmap",
+            "📊 Classic Report",
+        ])
 
-        # Detailed report
-        with st.expander("📋 Detailed Layer-by-Layer Report"):
-            st.code(report.summary(), language="text")
+        with tab_heatmap:
+            render_heatmap_tab(report)
 
-        # Recommendations
-        if report.get_problematic_layers():
-            st.subheader("💡 Recommendations")
-            st.warning(
-                f"⚠️ Found {len(report.get_problematic_layers())} problematic layers. "
-                "See detailed recommendations below."
-            )
+        with tab_classic:
+            st.subheader("📊 Gradient Analysis")
+            fig = plot_gradient_distribution(report)
+            st.pyplot(fig)
 
-            for layer in report.get_problematic_layers():
-                pathology = layer.diagnose()
-                if pathology == GradientPathology.VANISHING:
-                    st.error(
-                        f"**{layer.layer_name}**: Vanishing gradients (mean={layer.mean:.2e})\n"
-                        "- Try: ReLU/GELU activation\n"
-                        "- Try: He/Xavier initialization\n"
-                        "- Try: LayerNorm or BatchNorm"
-                    )
-                elif pathology == GradientPathology.EXPLODING:
-                    st.error(
-                        f"**{layer.layer_name}**: Exploding gradients (mean={layer.mean:.2e})\n"
-                        "- Use gradient clipping\n"
-                        "- Reduce learning rate\n"
-                        "- Check weight initialization"
-                    )
-                elif pathology == GradientPathology.UNSTABLE:
-                    st.warning(
-                        f"**{layer.layer_name}**: Unstable gradients (std={layer.std:.2e})\n"
-                        "- Consider: Gradient clipping\n"
-                        "- Consider: LayerNorm"
-                    )
-        else:
-            st.success("✅ All layers show healthy gradient flow!")
+            with st.expander("📋 Detailed Layer-by-Layer Report"):
+                st.code(report.summary(), language="text")
 
-        # Model architecture
-        with st.expander("🏗️ Model Architecture"):
-            st.json(config)
+            if report.get_problematic_layers():
+                st.subheader("💡 Recommendations")
+                st.warning(
+                    f"⚠️ Found {len(report.get_problematic_layers())} problematic layers."
+                )
+                for layer in report.get_problematic_layers():
+                    pathology = layer.diagnose()
+                    if pathology == GradientPathology.VANISHING:
+                        st.error(
+                            f"**{layer.layer_name}**: Vanishing (mean={layer.mean:.2e})\n"
+                            "- Try: ReLU/GELU · He/Xavier init · LayerNorm"
+                        )
+                    elif pathology == GradientPathology.EXPLODING:
+                        st.error(
+                            f"**{layer.layer_name}**: Exploding (mean={layer.mean:.2e})\n"
+                            "- Use gradient clipping · Reduce LR · Check init"
+                        )
+                    elif pathology == GradientPathology.UNSTABLE:
+                        st.warning(
+                            f"**{layer.layer_name}**: Unstable (std={layer.std:.2e})\n"
+                            "- Consider: Gradient clipping · LayerNorm"
+                        )
+            else:
+                st.success("✅ All layers show healthy gradient flow!")
+
+            with st.expander("🏗️ Model Architecture"):
+                st.json(config)
 
     else:
         st.info("👈 Configure your model in the sidebar and click 'Analyze Gradients' to start.")
