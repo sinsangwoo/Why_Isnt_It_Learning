@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gradient-pathology"
-version = "0.6.0"
+version = "0.7.0"
 description = "Automated gradient pathology detection and analysis"
 authors = [{name = "Sangwoo Sin"}]
 requires-python = ">=3.9"
