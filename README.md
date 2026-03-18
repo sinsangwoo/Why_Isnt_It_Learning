@@ -1,23 +1,29 @@
 # Gradient Pathology
 
-**Production-grade gradient diagnostics for PyTorch models.**
+**Production-grade gradient diagnostics for PyTorch — diagnosis, visualisation, real-time monitoring, and automated expert advice in one library.**
 
 [![CI](https://github.com/sinsangwoo/Why_Isnt_It_Learning/workflows/CI/badge.svg)](https://github.com/sinsangwoo/Why_Isnt_It_Learning/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-orange.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](https://github.com/sinsangwoo/Why_Isnt_It_Learning)
+
+---
 
 ## Overview
 
-Automated detection and resolution of gradient pathologies in neural networks. From vanilla MLPs to large language models with FSDP and quantization.
+Gradient Pathology automates the full diagnostic workflow for deep learning training:
 
-**Key capabilities:**
-- Automatic pathology detection (vanishing, exploding, unstable gradients)
-- Transformer-specific diagnostics (attention entropy, FFN saturation)
-- Distributed training support (FSDP shard analysis)
-- Quantization impact measurement (8-bit/4-bit)
-- Cost optimization (GPU selection, training time estimation)
-- Production integrations (HuggingFace, Lightning, Ray Tune)
+| Phase | What it delivers |
+|---|---|
+| **Phase 1** — Data pipeline | `grad_norm`, `LayerGroup`, snapshot store for every parameter |
+| **Phase 2** — Heatmap | Interactive Plotly architecture graph: node fill = grad intensity, border = health |
+| **Phase 3** — Sankey | Information-flow diagram: narrow bands = information-loss zones, layer deep-dive panel |
+| **Phase 4** — Live + Expert | Real-time training monitor + 7-rule `ExpertEngine` with code-snippet recommendations |
+
+Works with vanilla MLPs, Transformers, FSDP, 8/4-bit quantization, HuggingFace Trainer, and PyTorch Lightning.
+
+---
 
 ## Installation
 
@@ -25,145 +31,371 @@ Automated detection and resolution of gradient pathologies in neural networks. F
 pip install gradient-pathology
 ```
 
-Optional dependencies:
 ```bash
-pip install gradient-pathology[dashboard]  # Streamlit UI
-pip install gradient-pathology[dev]        # Development tools
+# With interactive dashboard (Streamlit + Plotly)
+pip install "gradient-pathology[dashboard]"
+
+# With snapshot storage (Pandas + Parquet)
+pip install "gradient-pathology[storage]"
+
+# Full development environment
+pip install "gradient-pathology[dev]"
 ```
+
+---
 
 ## Quick Start
 
-### Basic Diagnosis
+### One-line diagnosis
 
 ```python
-import torch.nn as nn
 from gradient_pathology import GradientAnalyzer
 
-model = nn.Sequential(
-    nn.Linear(64, 128),
-    nn.ReLU(),
-    nn.Linear(128, 10),
-)
-
 analyzer = GradientAnalyzer(model)
-report = analyzer.diagnose(num_steps=50, input_shape=(64,))
+report   = analyzer.diagnose(num_steps=50, input_shape=(64,))
 print(report.summary())
 ```
 
-**Output:**
 ```
 ================================================================
-GRADIENT ANALYSIS REPORT
+GRADIENT ANALYSIS REPORT  —  synthetic  —  50 steps
 ================================================================
 Global Statistics:
-  Mean: 3.45e-03  ✓ HEALTHY
+  Mean: 3.45e-03  HEALTHY
   Std:  2.11e-02
+
+Layer breakdown:
+  [  0] transformer.h.0.attn.weight  group=attention  grad_norm=4.12e-03  HEALTHY
+  [  1] transformer.h.0.attn.bias    group=attention  grad_norm=2.08e-04  HEALTHY
+  ...
 
 No critical issues detected.
 ================================================================
 ```
 
-## Core Features
+### Launch the dashboard
 
-### 1. Automatic Pathology Detection
+```bash
+streamlit run src/gradient_pathology/dashboard.py
+```
 
-Detects and diagnoses gradient issues across all layers:
+The dashboard opens with four tabs:
+
+```
+Live Monitor  |  Sankey Flow  |  Architecture Heatmap  |  Classic Report
+```
+
+---
+
+## Feature Guide
+
+### Phase 1 — Data Pipeline
+
+#### Layer metadata and grad_norm
+
+`GradientAnalyzer` enriches every `LayerGradientStats` with Phase-1 fields:
 
 ```python
-analyzer = GradientAnalyzer(model)
 report = analyzer.diagnose(num_steps=100)
 
-for layer_name, stats in zip(model_layers, report.layer_stats):
-    diagnosis = stats.diagnose()  # HEALTHY, VANISHING, EXPLODING, UNSTABLE
-    if diagnosis != "HEALTHY":
-        print(f"{layer_name}: {diagnosis}")
+for s in report.layer_stats:
+    print(s.layer_name, s.layer_type, s.group, f"grad_norm={s.grad_norm:.2e}")
 ```
 
-### 2. Real-time Monitoring
+`LayerGroup` values: `ATTENTION`, `FFN`, `LAYER_NORM`, `EMBEDDING`, `HEAD`, `OTHER`
 
-**Training Callbacks:**
-```python
-from gradient_pathology.callbacks import GradientMonitorCallback
+#### Snapshot store
 
-callback = GradientMonitorCallback(model, check_every_n_steps=100)
-
-for batch in dataloader:
-    loss = train_step(batch)
-    callback.on_batch_end(optimizer)
-```
-
-**Dashboard:**
-```bash
-streamlit run gradient_pathology/dashboard.py
-```
-
-### 3. Advanced Analysis
-
-**Learning Rate Finder:**
-```python
-from gradient_pathology.advanced import LRFinder
-
-finder = LRFinder(model, optimizer)
-suggested_lr = finder.find(dataloader, loss_fn)
-```
-
-**Hessian Analysis:**
-```python
-from gradient_pathology.advanced import HessianAnalyzer
-
-analyzer = HessianAnalyzer(model)
-eigenvalues = analyzer.compute_top_eigenvalues(dataloader, loss_fn)
-```
-
-**Effective Rank:**
-```python
-from gradient_pathology.auto import EffectiveRankAnalyzer
-
-analyzer = EffectiveRankAnalyzer(model)
-rank = analyzer.compute_effective_rank()  # Parameter efficiency
-```
-
-### 4. Expert System
-
-Automated recommendations based on detected issues:
+Record step-by-step gradient statistics to JSON or Parquet:
 
 ```python
-from gradient_pathology.expert import ExpertSystem
+from gradient_pathology import GradientSnapshotStore
 
-expert = ExpertSystem()
-diagnoses = expert.diagnose_architecture(model, gradient_stats)
-print(expert.generate_report())
+store = GradientSnapshotStore(output_dir="runs/exp1", fmt="parquet")
+
+for step, (x, y) in enumerate(loader):
+    loss.backward()
+    store.record_from_stats(step, report.layer_stats)
+
+store.flush()
+df = store.load()   # pandas DataFrame: step x layer
+```
+
+#### TransformerLayerClassifier
+
+Classify any model's parameters without a forward pass:
+
+```python
+from gradient_pathology import TransformerLayerClassifier
+
+clf  = TransformerLayerClassifier(model)
+meta = clf.build_param_metadata()
+# {'transformer.h.0.attn.c_attn.weight': ('Linear', LayerGroup.ATTENTION), ...}
+```
+
+---
+
+### Phase 2 — Architecture Heatmap
+
+An interactive Plotly node graph where **node fill** encodes grad_norm intensity and **node border** encodes pathology health status.
+
+```python
+from gradient_pathology import GradientHeatmapRenderer
+
+renderer = GradientHeatmapRenderer(report)
+renderer.show()                          # browser
+renderer.save_html("heatmap.html")       # standalone file
+```
+
+```python
+# Inside the Streamlit dashboard
+from gradient_pathology.heatmap.dashboard_tab import render_heatmap_tab
+
+with tab_heatmap:
+    render_heatmap_tab(report)
+```
+
+**Visual encoding:**
+
+| Channel | Meaning |
+|---|---|
+| Node fill colour | `grad_norm` intensity (Viridis or RdYlGn) |
+| Node border ring | Pathology health (green = healthy, red = vanishing, ...) |
+| Edge opacity | Gradient flow connection |
+
+**Hard-pin rule:** vanishing layers always map to the darkest colour stop regardless of relative normalisation — they are never hidden by a healthy neighbour.
+
+---
+
+### Phase 3 — Sankey Information-Flow Diagram
+
+Converts `grad_norm` values to link widths. **Narrow bands are information-loss zones.**
+
+```python
+from gradient_pathology import GradientSankeyRenderer
+
+renderer = GradientSankeyRenderer(report, strategy="log")
+renderer.show()
+renderer.save_html("sankey.html")
+```
+
+```python
+# From GradientFlowGraph (one-liner shim)
+from gradient_pathology.auto.gradient_flow_graph import GradientFlowGraph
+
+gfg = GradientFlowGraph(model)
+fig = gfg.plot_sankey(strategy="log", vanishing_threshold=1e-7)
+fig.show()
+```
+
+**Five flow strategies:**
+
+| Strategy | When to use |
+|---|---|
+| `LOG` (default) | Wide dynamic range — most Transformer models |
+| `NORMALISED` | Linear spread when norms are on similar scales |
+| `RELATIVE` | Emphasise fraction of peak, not absolute magnitude |
+| `SQRT` | Middle ground between LOG and NORMALISED |
+| `RAW` | When norms are already comparable |
+
+**Link colour = FlowZone:**
+
+| Zone | Colour | Condition |
+|---|---|---|
+| `HEALTHY` | Semi-transparent green | Both endpoints healthy |
+| `VANISHING` | Semi-transparent red | Downstream node vanishing |
+| `BOTTLENECK` | Semi-transparent amber | Relative drop > threshold |
+| `EXPLODING` | Semi-transparent orange | Either endpoint exploding |
+
+#### Layer deep-dive panel
+
+```python
+from gradient_pathology.sankey import LayerDetailPanel
+
+panel = LayerDetailPanel(report)
+
+# Plain dict (for any UI)
+d = panel.build_dict("transformer.h.0.attn.c_attn.weight")
+print(d["pathology"], d["peer_rank"], d["recommendations"])
+
+# 2x2 Plotly subplot (Radar / Bar / Peer-rank / Diagnosis table)
+fig = panel.build_plotly("transformer.h.0.attn.c_attn.weight")
+fig.show()
+```
+
+---
+
+### Phase 4 — Real-time Monitoring + Expert System
+
+#### LiveGradientBridge
+
+Connect your training loop to the Streamlit dashboard with zero blocking:
+
+```python
+from gradient_pathology import LiveGradientBridge, StreamlitCallback
+
+# Shared object (thread-safe ring-buffer)
+bridge   = LiveGradientBridge.from_session_state(max_steps=500)
+callback = StreamlitCallback(model, bridge, push_every_n_steps=5)
+
+for step, (x, y) in enumerate(loader):
+    optimizer.zero_grad()
+    loss = criterion(model(x), y)
+    loss.backward()
+    optimizer.step()
+    callback.on_batch_end(step=step, loss=loss.item())
+```
+
+```python
+# Dashboard side — reads on every Streamlit rerun
+snap  = bridge.latest_snapshot()         # GradientSnapshot
+steps, losses = bridge.metrics_series("loss")
+alerts = bridge.drain_alerts()           # vanishing/exploding auto-alerts
+```
+
+#### HuggingFace Trainer drop-in
+
+```python
+from gradient_pathology import LiveGradientBridge, HuggingFaceCallbackAdapter
+
+bridge  = LiveGradientBridge()
+trainer = Trainer(
+    model=model,
+    callbacks=[HuggingFaceCallbackAdapter(model, bridge)],
+)
+trainer.train()
+```
+
+#### ExpertEngine
+
+Layer-aware rule engine with 7 built-in diagnostic rules:
+
+```python
+from gradient_pathology import ExpertEngine
+
+engine   = ExpertEngine()
+findings = engine.analyse(report)
+
+for f in findings:
+    print(f.emoji, f.title)
+    print(f.detail)
+    if f.code_hint:
+        print("--- fix ---")
+        print(f.code_hint)
 ```
 
 **Example output:**
+
 ```
-🚨 CRITICAL ISSUES:
+Vanishing gradients in 4 layer(s) (20%)
+Layers below grad_norm < 1e-07 cannot propagate gradients back to early layers.
+Likely causes: sigmoid/tanh saturation, missing normalisation.
+--- fix ---
+# Option 1: Replace saturating activations
+model = replace_activations(model, nn.Sigmoid, nn.GELU)
 
-Deep network without proper normalization (confidence: 95%)
-Recommendations:
-  • Add LayerNorm after each layer
-  • Use PreLN (Pre-LayerNorm) architecture
-  • Implement gradient checkpointing
+# Option 2: Add LayerNorm after each Linear
+# Linear -> LayerNorm -> GELU  (PreLN pattern)
 ```
 
-## LLM-Specific Features
+**Built-in rules:**
 
-### Transformer Diagnostics
+| Rule | Severity | What it catches |
+|---|---|---|
+| `vanishing_layers` | Critical | `grad_norm < vanishing_threshold` |
+| `exploding_layers` | Critical | `grad_norm > exploding_threshold` |
+| `dead_neurons` | Warning | `zero_ratio > 90%` |
+| `bottleneck_cascade` | Warning | Abrupt consecutive-depth norm drop |
+| `no_layernorm` | Info / Critical | Deep network missing normalisation |
+| `attention_health` | Warning | Attention-group near-zero gradients |
+| `layernorm_explosion` | Warning | LayerNorm parameter explosion |
+
+**Custom rules:**
+
+```python
+from gradient_pathology import ExpertEngine, ExpertFinding
+
+engine = ExpertEngine()
+
+@engine.register_rule
+def my_rule(report):
+    if some_condition(report):
+        return [ExpertFinding(
+            rule_id="my_rule",
+            severity="warning",
+            title="Custom issue found",
+            detail="Explanation in **markdown**.",
+            code_hint="# Fix:\nmodel.apply(fix_fn)",
+        )]
+    return []
+```
+
+---
+
+## Streamlit Dashboard — Full Walkthrough
+
+### Starting
+
+```bash
+pip install "gradient-pathology[dashboard]"
+streamlit run src/gradient_pathology/dashboard.py
+```
+
+### Tab 1 — Live Monitor
+
+Displays live training data pushed through `LiveGradientBridge`:
+
+- Status row: last step, loss, global grad-mean, alert count
+- Training loss curve (Plotly, log scale)
+- Grad-norm trend with vanishing/exploding threshold bands
+- Per-layer bar chart (top-N layers, colour = health status)
+- Alert feed (latest 10 auto-detected vanishing/exploding events)
+- Refresh button
+
+### Tab 2 — Sankey Flow
+
+- Settings: flow strategy, vanishing threshold, bottleneck ratio, merge toggle, group-colour toggle
+- Full-width Sankey diagram
+- Info-loss summary: vanishing links, bottleneck links, max info loss %
+- Critical zones table: top-8 worst links
+- Layer deep-dive: selectbox (default = worst layer) -> 2x2 Plotly diagnostic figure
+- Expert panel: filtered findings for the selected layer
+
+### Tab 3 — Architecture Heatmap
+
+- Settings: colormap (Viridis / RdYlGn), layout (Sequential / Grouped / Spring), vanishing threshold, edge toggle
+- Full interactive Plotly architecture graph
+- Vanishing / Exploding warning panels
+
+### Tab 4 — Classic Report
+
+- Gradient distribution bar chart + pathology pie chart
+- Full layer-by-layer text report
+- Expert System full report (collapsible)
+- Actionable recommendations per problematic layer
+
+### Expert System banner
+
+A global coloured banner appears above all tabs when findings exist:
+
+- Green: all healthy
+- Orange: warnings only
+- Red: critical issues (auto-expanded with detail + code hints)
+
+---
+
+## Other Capabilities
+
+### LLM / Transformer Diagnostics
 
 ```python
 from gradient_pathology.llm import TransformerDiagnostics
 
 diag = TransformerDiagnostics(model)
-
-# Attention analysis
-stats = diag.analyze_attention_entropy(attn_weights, "layer_0")
 if diag.detect_attention_collapse(attn_weights):
-    print("⚠️ Attention collapsed")
+    print("Attention collapsed — check temperature / dropout")
 
-# FFN analysis
 ffn_stats = diag.analyze_ffn_saturation(ffn_activations, "layer_0")
-if ffn_stats["saturated_fraction"] > 0.5:
-    print("⚠️ FFN saturated")
 ```
 
 ### FSDP Support
@@ -172,9 +404,7 @@ if ffn_stats["saturated_fraction"] > 0.5:
 from gradient_pathology.llm import FSDPAnalyzer
 
 analyzer = FSDPAnalyzer(fsdp_model)
-balance = analyzer.check_shard_balance()
-if balance["imbalance_ratio"] > 10.0:
-    print("⚠️ High shard imbalance")
+balance  = analyzer.check_shard_balance()
 ```
 
 ### Quantization Analysis
@@ -183,174 +413,102 @@ if balance["imbalance_ratio"] > 10.0:
 from gradient_pathology.llm import QuantizationAnalyzer
 
 analyzer = QuantizationAnalyzer(model)
-quantized_layers = analyzer.detect_quantized_layers()
-error_stats = analyzer.analyze_quantization_error(original, quantized)
+error    = analyzer.analyze_quantization_error(original, quantized)
 ```
 
-## Cost Optimization
-
-### GPU Cost Calculator
+### Fine-tuning Monitors
 
 ```python
-from gradient_pathology.cost import CostCalculator
+from gradient_pathology import LoRARankTracker, AdapterMonitor, ForgettingDetector
 
-calc = CostCalculator()
-
-# Compare GPU options
-costs = calc.compare_gpus({
-    "A100": 32.0,
-    "V100": 48.0,
-    "T4": 96.0,
-})
-
-cheapest = calc.find_cheapest(costs)
-print(f"Best option: {cheapest['gpu_type']} - ${cheapest['total_cost']:.2f}")
+tracker   = LoRARankTracker(model)
+monitor   = AdapterMonitor(model)
+forgetter = ForgettingDetector(model)
 ```
 
-### Training Optimizer
+### Cost Optimisation
 
 ```python
-from gradient_pathology.cost import TrainingOptimizer
+from gradient_pathology.cost import CostCalculator, TrainingOptimizer
 
+calc      = CostCalculator()
 optimizer = TrainingOptimizer(model)
-suggestion = optimizer.suggest_optimization(
-    current_gpu="A100",
-    estimated_hours=32.0,
-    gradient_health="VANISHING"
-)
-
-print(optimizer.generate_report("A100", 32.0, "VANISHING"))
+print(optimizer.generate_report("A100", hours=32.0, health="VANISHING"))
 ```
 
-**Example output:**
+---
+
+## Project Structure
+
 ```
-======================================================================
-COST OPTIMIZATION REPORT
-======================================================================
-Current Configuration:
-  GPU: A100
-  Training time: 32.0h
-  Cost: $117.44
-
-Optimized Configuration:
-  GPU: A100
-  Training time: 10.7h
-  Cost: $39.15
-
-Savings:
-  Amount: $78.29
-  Percent: 66.7%
-
-Reason:
-  Fix vanishing gradients to converge 3x faster on same GPU.
+src/gradient_pathology/
+|-- analyzer.py              # GradientAnalyzer -- report generation
+|-- core.py                  # LayerGradientStats, GradientReport, LayerGroup
+|-- callbacks.py             # GradientMonitor (legacy training monitor)
+|
+|-- pipeline/                # Phase 1
+|   |-- classifier.py        # TransformerLayerClassifier
+|   `-- snapshot.py          # GradientSnapshotStore (JSON / Parquet)
+|
+|-- heatmap/                 # Phase 2
+|   |-- colormap.py          # ColorScheme, grad_norm_to_color
+|   |-- layout.py            # LayoutStrategy, ArchitectureLayout
+|   |-- renderer.py          # GradientHeatmapRenderer (Plotly)
+|   `-- dashboard_tab.py     # render_heatmap_tab()
+|
+|-- sankey/                  # Phase 3
+|   |-- flow.py              # SankeyFlowBuilder, FlowStrategy, FlowZone
+|   |-- renderer.py          # GradientSankeyRenderer (go.Sankey)
+|   |-- detail_panel.py      # LayerDetailPanel (2x2 diagnostic subplot)
+|   `-- dashboard_tab.py     # render_sankey_tab()
+|
+|-- monitor/                 # Phase 4
+|   |-- bridge.py            # LiveGradientBridge (thread-safe ring-buffer)
+|   `-- callback.py          # StreamlitCallback, HuggingFaceCallbackAdapter
+|
+|-- expert/                  # Phase 4
+|   |-- rules.py             # ExpertSystem (global-scalar rules, legacy)
+|   `-- engine.py            # ExpertEngine -- 7 layer-aware rules + ExpertFinding
+|
+|-- dashboard/               # Phase 4
+|   |-- expert_panel.py      # render_expert_banner/popup/layer_panel()
+|   |-- realtime_tab.py      # render_realtime_tab()
+|   `-- layout.py            # run_dashboard() -- 4-tab orchestrator
+|
+|-- dashboard.py             # Backward-compat shim (streamlit run target)
+|
+|-- auto/
+|   |-- gradient_flow_graph.py  # GradientFlowGraph (plot_heatmap, plot_sankey)
+|   |-- effective_rank.py
+|   `-- layer_lr_finder.py
+|
+|-- llm/                     # LLM-specific diagnostics
+|-- cost/                    # GPU cost calculator
+|-- integrations/            # HuggingFace / Lightning / Ray Tune
+|-- benchmark/               # MLflow tracking
+`-- finetuning/              # LoRA, Adapter, Forgetting monitors
 ```
 
-## Integrations
+---
 
-### HuggingFace Transformers
-
-```python
-from gradient_pathology.integrations import HuggingFacePlugin
-
-plugin = HuggingFacePlugin(model)
-trainer = Trainer(model=model, callbacks=[plugin])
-```
-
-### PyTorch Lightning
-
-```python
-from gradient_pathology.integrations import GradientPathologyCallback
-
-callback = GradientPathologyCallback(check_every_n_steps=100)
-trainer = pl.Trainer(callbacks=[callback])
-```
-
-### Ray Tune
-
-```python
-from gradient_pathology.integrations import GradientPathologyReporter
-
-reporter = GradientPathologyReporter(model)
-reporter.report_metrics(step=iteration)
-```
-
-## Reproducibility
-
-### Docker
+## Testing
 
 ```bash
-docker build -t gradient-pathology .
-docker run gradient-pathology
+# All tests
+pytest tests/ -v --cov=src/gradient_pathology
+
+# Per-phase
+pytest tests/test_phase1_pipeline.py          # 25 tests
+pytest tests/test_phase2_heatmap.py           # 30 tests
+pytest tests/test_phase3_sankey.py            # 35 tests
+pytest tests/test_phase4_realtime_expert.py   # 30 tests
 ```
 
-### Benchmarks
+Tests are self-contained. Plotly-dependent cases auto-skip when Plotly is absent.
 
-```bash
-python -m gradient_pathology.benchmark --device cpu --suite standard
-```
+---
 
-### MLflow Tracking
-
-```python
-from gradient_pathology.benchmark import ExperimentTracker
-
-with ExperimentTracker(experiment_name="my_experiments") as tracker:
-    tracker.log_params({"layers": 20, "activation": "gelu"})
-    report = runner.run_benchmark(config)
-    tracker.log_metrics({"gradient_mean": report.global_mean})
-```
-
-## Documentation
-
-- **[Quick Start Guide](docs/quickstart.md)** - Get started in 5 minutes
-- **[API Reference](docs/api/)** - Complete API documentation
-- **[Tutorials](docs/tutorials/)** - Step-by-step guides
-- **[Case Studies](docs/casestudies/)** - Real-world examples
-  - [Stable Diffusion Training Stabilization](docs/casestudies/stable_diffusion.md)
-  - BERT Fine-tuning (coming soon)
-  - GPT Training (coming soon)
-
-## Architecture
-
-```
-gradient_pathology/
-├── analyzer.py              # Core gradient analysis
-├── core.py                  # Data structures
-├── callbacks.py             # Training integration
-├── dashboard.py             # Streamlit UI
-├── visualize.py             # Plotting utilities
-├── advanced/
-│   ├── lr_finder.py        # Learning rate search
-│   ├── hessian.py          # Second-order analysis
-│   └── transformer_diagnostics.py
-├── auto/
-│   ├── effective_rank.py   # Parameter efficiency
-│   ├── layer_lr_finder.py  # Layer-wise LR
-│   └── gradient_flow_graph.py
-├── expert/
-│   └── rules.py            # Diagnostic expert system
-├── transformers/
-│   ├── attention_monitor.py
-│   └── hooks.py
-├── llm/
-│   ├── transformer_advanced.py
-│   ├── distributed.py      # FSDP support
-│   └── quantization.py
-├── cost/
-│   ├── calculator.py       # GPU cost estimation
-│   └── optimizer.py        # Training optimization
-├── integrations/
-│   ├── huggingface.py
-│   ├── lightning.py
-│   └── raytune.py
-└── benchmark/
-    ├── runner.py
-    └── tracker.py          # MLflow integration
-```
-
-## Development
-
-### Setup
+## Development Setup
 
 ```bash
 git clone https://github.com/sinsangwoo/Why_Isnt_It_Learning.git
@@ -358,72 +516,59 @@ cd Why_Isnt_It_Learning
 pip install -e ".[dev]"
 ```
 
-### Testing
-
 ```bash
-pytest tests/ -v --cov=src/gradient_pathology
+ruff check src/ tests/   # lint
+mypy src/                # type check
 ```
-
-### Code Quality
-
-```bash
-ruff check src/ tests/
-mypy src/
-```
-
-## Performance
-
-**Benchmark results** (Intel i7, CPU mode):
-
-| Model | Layers | Diagnostic Time | Overhead |
-|-------|--------|-----------------|----------|
-| Small MLP | 5 | 0.12s | <1% |
-| Deep Network | 50 | 0.89s | ~2% |
-| Transformer | 12 | 1.34s | ~3% |
-
-## Citation
-
-If you use Gradient Pathology in your research:
-
-```bibtex
-@software{gradient_pathology,
-  title={Gradient Pathology: Automated Gradient Analysis for PyTorch},
-  author={Sin, Sangwoo},
-  year={2025},
-  url={https://github.com/sinsangwoo/Why_Isnt_It_Learning}
-}
-```
-
-## Contributing
-
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
-
-### Areas for Contribution
-
-- Additional case studies
-- New diagnostic rules
-- Framework integrations
-- Performance optimizations
-- Documentation improvements
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-Based on research from:
-- Glorot & Bengio (2010) - Understanding the difficulty of training deep feedforward neural networks
-- He et al. (2015) - Delving Deep into Rectifiers
-- Ba et al. (2016) - Layer Normalization
-- Xiong et al. (2020) - On Layer Normalization in the Transformer Architecture
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/sinsangwoo/Why_Isnt_It_Learning/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/sinsangwoo/Why_Isnt_It_Learning/discussions)
-- **Email**: Contact via GitHub profile
 
 ---
 
-**Built with ❤️ for the deep learning community**
+## Benchmark
+
+```bash
+python -m gradient_pathology.benchmark --device cpu --suite standard
+```
+
+| Model | Layers | Diagnostic time | Overhead |
+|---|---|---|---|
+| Small MLP | 5 | 0.12 s | < 1% |
+| Deep network | 50 | 0.89 s | ~ 2% |
+| Transformer | 12 | 1.34 s | ~ 3% |
+
+---
+
+## Citation
+
+```bibtex
+@software{gradient_pathology,
+  title  = {Gradient Pathology: Automated Gradient Analysis for PyTorch},
+  author = {Sin, Sangwoo},
+  year   = {2025},
+  url    = {https://github.com/sinsangwoo/Why_Isnt_It_Learning}
+}
+```
+
+---
+
+## References
+
+- Glorot & Bengio (2010) -- Understanding the difficulty of training deep feedforward neural networks
+- He et al. (2015) -- Delving Deep into Rectifiers
+- Ba et al. (2016) -- Layer Normalization
+- Xiong et al. (2020) -- On Layer Normalization in the Transformer Architecture
+
+---
+
+## Contributing
+
+Contributions are welcome. Please open an issue first to discuss your idea.
+
+Focus areas: additional diagnostic rules, new framework integrations, performance optimisations, case studies, documentation.
+
+## License
+
+MIT License -- see [LICENSE](LICENSE) for details.
+
+---
+
+**Built with love for the deep learning community**
