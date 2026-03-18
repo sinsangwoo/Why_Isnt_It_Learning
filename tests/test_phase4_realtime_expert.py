@@ -1,13 +1,12 @@
-"""Tests for Phase-4: LiveGradientBridge, StreamlitCallback, ExpertEngine.
-
-Streamlit-dependent rendering tests are skipped when Streamlit is absent.
-Plotly-dependent tests are skipped when Plotly is absent.
+"""Tests for Phase-4: LiveGradientBridge, StreamlitCallback,
+ExpertEngine, and integration.
 """
 
 from __future__ import annotations
 
-import time
+import math
 import threading
+import time
 from typing import List
 
 import numpy as np
@@ -21,433 +20,503 @@ from gradient_pathology.core import (
     LayerGradientStats,
     LayerGroup,
 )
-from gradient_pathology.monitor.bridge import (
-    LiveGradientBridge,
-    get_global_bridge,
-    reset_global_bridge,
-)
+from gradient_pathology.monitor.bridge import GradientSnapshot, LiveGradientBridge
 from gradient_pathology.monitor.callback import StreamlitCallback
 from gradient_pathology.expert.engine import (
     ExpertEngine,
     ExpertFinding,
-    _safe_norm,
-)
-
-try:
-    import plotly.graph_objects as go
-    _PLOTLY_AVAILABLE = True
-except ImportError:
-    _PLOTLY_AVAILABLE = False
-
-requires_plotly = pytest.mark.skipif(
-    not _PLOTLY_AVAILABLE, reason="plotly not installed"
+    inject_layer_norms,
 )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Fixtures
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-def _make_stats(n: int = 6, vanishing: bool = False, exploding: bool = False) -> List[LayerGradientStats]:
+def _make_stats(
+    n: int = 6,
+    vanishing: bool = False,
+    exploding: bool = False,
+    dead: bool = False,
+) -> List[LayerGradientStats]:
     groups = [
-        LayerGroup.EMBEDDING, LayerGroup.ATTENTION, LayerGroup.LAYER_NORM,
-        LayerGroup.FFN,       LayerGroup.LAYER_NORM, LayerGroup.HEAD,
+        LayerGroup.EMBEDDING,
+        LayerGroup.ATTENTION, LayerGroup.LAYER_NORM,
+        LayerGroup.FFN,       LayerGroup.LAYER_NORM,
+        LayerGroup.HEAD,
     ]
     stats = []
     for i in range(n):
         if vanishing and i == 0:
             mean, gn = 1e-9, 1e-9
         elif exploding and i == n - 1:
-            mean, gn = 2e3, 2e4
+            mean, gn = 2e4, 2e4
+        elif dead and i == 1:
+            mean, gn, zero_ratio = 1e-3, 1e-3, 0.95
         else:
             mean, gn = 1e-3 * (i + 1), 1e-2 * (i + 1)
         s = LayerGradientStats(
             layer_name=f"model.layer_{i}.weight",
-            layer_index=i, mean=mean,
-            std=abs(mean) * 0.1, min=-abs(mean), max=abs(mean),
-            median=mean, num_zeros=0, total_params=64,
-            layer_type="Linear", depth=i,
-            group=groups[i % len(groups)], grad_norm=gn,
+            layer_index=i,
+            mean=mean if not (dead and i == 1) else 1e-3,
+            std=abs(mean if not (dead and i == 1) else 1e-3) * 0.1,
+            min=-abs(mean if not (dead and i == 1) else 1e-3),
+            max=abs(mean if not (dead and i == 1) else 1e-3),
+            median=mean if not (dead and i == 1) else 1e-3,
+            num_zeros=int((zero_ratio if dead and i == 1 else 0) * 64),
+            total_params=64,
+            layer_type="Linear",
+            depth=i,
+            group=groups[i % len(groups)],
+            grad_norm=gn,
         )
         stats.append(s)
     return stats
 
 
-def _make_report(n=6, vanishing=False, exploding=False) -> GradientReport:
-    stats = _make_stats(n=n, vanishing=vanishing, exploding=exploding)
+def _make_report(
+    n: int = 6,
+    vanishing: bool = False,
+    exploding: bool = False,
+    dead: bool = False,
+) -> GradientReport:
+    s = _make_stats(n=n, vanishing=vanishing, exploding=exploding, dead=dead)
     return GradientReport(
-        layer_stats=stats,
-        global_mean=float(np.mean([abs(s.mean) for s in stats])),
-        global_std=float(np.std([abs(s.mean) for s in stats])),
+        layer_stats=s,
+        global_mean=float(np.mean([abs(x.mean) for x in s])),
+        global_std=float(np.std([abs(x.mean)  for x in s])),
         num_steps=10,
         data_source="synthetic",
     )
 
 
-# ---------------------------------------------------------------------------
+@pytest.fixture()
+def simple_model() -> nn.Module:
+    return nn.Sequential(
+        nn.Linear(8, 16), nn.ReLU(),
+        nn.Linear(16, 8), nn.ReLU(),
+        nn.Linear(8, 2),
+    )
+
+
+# ===========================================================================
 # LiveGradientBridge
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-class TestLiveGradientBridge:
-    def setup_method(self):
-        reset_global_bridge()
+class TestLiveGradientBridgeBasic:
+    def test_initial_state_is_empty(self):
+        bridge = LiveGradientBridge()
+        assert bridge.is_empty
+        assert bridge.latest_snapshot() is None
+        assert bridge.all_snapshots() == []
 
-    def teardown_method(self):
-        reset_global_bridge()
+    def test_push_increments_total(self):
+        bridge = LiveGradientBridge()
+        bridge.push(step=0, loss=1.0)
+        assert bridge.total_pushed == 1
+        bridge.push(step=1, loss=0.9)
+        assert bridge.total_pushed == 2
 
-    def test_push_step_increments_total(self):
-        b = LiveGradientBridge(max_steps=100)
-        b.push_step(0, 1.0, {"fc.weight": {"mean": 1e-3, "std": 1e-4, "max": 2e-3}})
-        assert b.total_steps == 1
+    def test_push_returns_snapshot(self):
+        bridge = LiveGradientBridge()
+        snap = bridge.push(step=0, loss=2.0)
+        assert isinstance(snap, GradientSnapshot)
+        assert snap.step == 0
+        assert snap.loss == pytest.approx(2.0)
 
-    def test_ring_buffer_caps_at_max_steps(self):
-        b = LiveGradientBridge(max_steps=5)
-        for i in range(10):
-            b.push_step(i, float(i), {})
-        assert len(b.step_history) == 5
-        assert len(b.loss_history) == 5
+    def test_latest_snapshot_after_push(self):
+        bridge = LiveGradientBridge()
+        bridge.push(step=0, loss=1.5)
+        bridge.push(step=1, loss=1.2)
+        latest = bridge.latest_snapshot()
+        assert latest is not None
+        assert latest.step == 1
 
-    def test_snapshot_returns_copy(self):
-        b = LiveGradientBridge()
-        b.push_step(0, 0.5, {})
-        snap1 = b.snapshot()
-        b.push_step(1, 0.4, {})
-        snap2 = b.snapshot()
-        assert len(snap1["steps"]) == 1
-        assert len(snap2["steps"]) == 2
+    def test_ring_buffer_maxlen_respected(self):
+        bridge = LiveGradientBridge(max_steps=3)
+        for i in range(7):
+            bridge.push(step=i, loss=float(i))
+        snaps = bridge.all_snapshots()
+        assert len(snaps) == 3
+        assert snaps[0].step == 4  # oldest retained is step 4
 
-    def test_push_alert_stores_message(self):
-        b = LiveGradientBridge()
-        b.push_alert("test alert")
-        assert "test alert" in b.snapshot()["alerts"]
+    def test_clear_resets_state(self):
+        bridge = LiveGradientBridge()
+        bridge.push(step=0, loss=1.0)
+        bridge.clear()
+        assert bridge.is_empty
+        assert bridge.total_pushed == 0
 
-    def test_pop_alerts_clears_queue(self):
-        b = LiveGradientBridge()
-        b.push_alert("a")
-        b.push_alert("b")
-        popped = b.pop_alerts()
-        assert len(popped) == 2
-        assert b.pop_alerts() == []
+    def test_metrics_series_loss(self):
+        bridge = LiveGradientBridge()
+        for i in range(4):
+            bridge.push(step=i, loss=float(i) * 0.5)
+        steps, values = bridge.metrics_series("loss")
+        assert steps == [0, 1, 2, 3]
+        assert values == pytest.approx([0.0, 0.5, 1.0, 1.5])
 
-    def test_signal_done_sets_is_training_false(self):
-        b = LiveGradientBridge()
-        b.push_step(0, 1.0, {})
-        assert b.snapshot()["is_training"] is True
-        b.signal_done()
-        assert b.snapshot()["is_training"] is False
+    def test_drain_alerts_clears_pending(self):
+        bridge = LiveGradientBridge(alert_threshold=1e-7)
+        bridge.push(step=0, loss=0.5, layer_norms={"fc.weight": 1e-9})
+        alerts = bridge.drain_alerts()
+        assert len(alerts) >= 1
+        assert bridge.drain_alerts() == []
 
-    def test_clear_resets_all_buffers(self):
-        b = LiveGradientBridge()
-        b.push_step(0, 1.0, {"x": {"mean": 1e-3, "std": 0.0, "max": 1e-3}})
-        b.push_alert("msg")
-        b.clear()
-        snap = b.snapshot()
-        assert snap["steps"] == []
-        assert snap["alerts"] == []
-        assert snap["total_steps"] == 0
-
-    def test_thread_safety(self):
-        """Concurrent push_step calls must not corrupt the bridge."""
-        b = LiveGradientBridge(max_steps=200)
-        errors: List[Exception] = []
-
-        def worker(start: int) -> None:
-            try:
-                for i in range(50):
-                    b.push_step(start + i, float(i), {})
-            except Exception as exc:
-                errors.append(exc)
-
-        threads = [threading.Thread(target=worker, args=(i * 50,)) for i in range(4)]
-        for t in threads: t.start()
-        for t in threads: t.join()
-
-        assert not errors, f"Thread safety errors: {errors}"
-        assert b.total_steps == 200
-
-    def test_global_bridge_singleton(self):
-        b1 = get_global_bridge()
-        b2 = get_global_bridge()
-        assert b1 is b2
-
-    def test_inject_session_state(self):
-        b = LiveGradientBridge()
-        b.push_step(0, 0.5, {})
-        fake_state: dict = {}
-        b.inject_session_state(fake_state)
-        assert "live_steps" in fake_state
-        assert fake_state["live_is_training"] is True
+    def test_push_with_layer_norms(self):
+        bridge = LiveGradientBridge()
+        snap = bridge.push(
+            step=0, loss=1.0,
+            layer_norms={"a.weight": 0.1, "b.weight": 0.2},
+        )
+        assert snap.layer_norms == {"a.weight": 0.1, "b.weight": 0.2}
+        assert math.isfinite(snap.global_mean)
 
 
-# ---------------------------------------------------------------------------
-# StreamlitCallback
-# ---------------------------------------------------------------------------
-
-class TestStreamlitCallback:
-    def setup_method(self):
-        reset_global_bridge()
-
-    def teardown_method(self):
-        reset_global_bridge()
-
-    def _simple_model(self) -> nn.Module:
-        return nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 4))
-
-    def _run_backward(self, model: nn.Module) -> float:
-        x   = torch.randn(4, 8)
-        y   = torch.randn(4, 4)
-        out = model(x)
-        loss = nn.functional.mse_loss(out, y)
+class TestLiveGradientBridgeModelPush:
+    def test_push_with_model_collects_norms(self, simple_model):
+        bridge = LiveGradientBridge()
+        x = torch.randn(4, 8)
+        y = torch.randn(4, 2)
+        loss = nn.MSELoss()(simple_model(x), y)
         loss.backward()
-        return loss.item()
-
-    def test_on_batch_end_pushes_to_bridge(self):
-        model    = self._simple_model()
-        bridge   = LiveGradientBridge()
-        callback = StreamlitCallback(model, bridge=bridge)
-        loss_val = self._run_backward(model)
-        callback.on_batch_end(loss=loss_val, step=0)
-        assert bridge.total_steps == 1
+        snap = bridge.push(step=0, loss=loss.item(), model=simple_model)
+        assert len(snap.layer_norms) > 0
+        assert all(v >= 0 for v in snap.layer_norms.values())
 
     def test_vanishing_gradient_triggers_alert(self):
-        model  = self._simple_model()
-        bridge = LiveGradientBridge()
-        # Manually zero all gradients to simulate vanishing
-        loss_val = self._run_backward(model)
-        for p in model.parameters():
-            if p.grad is not None:
-                p.grad.data.fill_(1e-10)
-        callback = StreamlitCallback(
-            model, bridge=bridge, alert_threshold=1e-7
-        )
-        callback.on_batch_end(loss=loss_val, step=0)
-        snap = bridge.snapshot()
-        assert len(snap["alerts"]) > 0
-        assert any("VANISHING" in a for a in snap["alerts"])
+        bridge = LiveGradientBridge(alert_threshold=1.0)  # very high threshold
+        bridge.push(step=0, loss=1.0, layer_norms={"fc.w": 0.01})
+        alerts = bridge.drain_alerts()
+        # 0.01 < 1.0 threshold → vanishing alert
+        assert any("Vanishing" in a for a in alerts)
 
-    def test_on_train_end_sets_is_training_false(self):
-        model    = self._simple_model()
+    def test_exploding_gradient_triggers_alert(self):
+        bridge = LiveGradientBridge(explode_threshold=1.0)
+        bridge.push(step=0, loss=1.0, layer_norms={"fc.w": 100.0})
+        alerts = bridge.drain_alerts()
+        assert any("Exploding" in a for a in alerts)
+
+
+class TestLiveGradientBridgeThreadSafety:
+    def test_concurrent_pushes_do_not_corrupt(self):
+        """100 threads each push 10 snapshots; buffer must be internally consistent."""
+        bridge = LiveGradientBridge(max_steps=2000)
+        errors: List[Exception] = []
+
+        def worker(tid: int) -> None:
+            try:
+                for j in range(10):
+                    bridge.push(step=tid * 10 + j, loss=float(j))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(100)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Thread errors: {errors}"
+        assert bridge.total_pushed == 1000
+        snaps = bridge.all_snapshots()
+        assert len(snaps) <= 2000
+
+    def test_concurrent_read_write_no_deadlock(self):
+        """Writer and reader threads must not deadlock or raise."""
+        bridge = LiveGradientBridge(max_steps=100)
+        stop_event = threading.Event()
+        errors: List[Exception] = []
+
+        def writer() -> None:
+            step = 0
+            while not stop_event.is_set():
+                try:
+                    bridge.push(step=step, loss=1.0)
+                    step += 1
+                except Exception as e:
+                    errors.append(e)
+
+        def reader() -> None:
+            while not stop_event.is_set():
+                try:
+                    bridge.all_snapshots()
+                    bridge.latest_snapshot()
+                except Exception as e:
+                    errors.append(e)
+
+        wt = threading.Thread(target=writer)
+        rt = threading.Thread(target=reader)
+        wt.start(); rt.start()
+        time.sleep(0.15)
+        stop_event.set()
+        wt.join(timeout=2); rt.join(timeout=2)
+
+        assert errors == []
+
+
+# ===========================================================================
+# StreamlitCallback
+# ===========================================================================
+
+class TestStreamlitCallback:
+    def test_on_batch_end_pushes_snapshot(self, simple_model):
         bridge   = LiveGradientBridge()
-        callback = StreamlitCallback(
-            model, bridge=bridge, report_every_n_steps=1
-        )
-        loss_val = self._run_backward(model)
-        callback.on_batch_end(loss=loss_val, step=0)
-        callback.on_train_end()
-        assert bridge.snapshot()["is_training"] is False
+        callback = StreamlitCallback(simple_model, bridge)
+        x = torch.randn(4, 8)
+        y = torch.randn(4, 2)
+        loss = nn.MSELoss()(simple_model(x), y)
+        loss.backward()
+        callback.on_batch_end(step=0, loss=loss.item())
+        assert bridge.total_pushed == 1
 
-    def test_internal_step_counter_increments(self):
-        model    = self._simple_model()
+    def test_push_every_n_steps(self, simple_model):
         bridge   = LiveGradientBridge()
-        callback = StreamlitCallback(model, bridge=bridge)
-        for i in range(5):
-            self._run_backward(model)
-            callback.on_batch_end(loss=0.1)
-        assert callback._step_count == 5
+        callback = StreamlitCallback(simple_model, bridge, push_every_n_steps=3)
+        x = torch.randn(4, 8)
+        for step in range(6):
+            nn.MSELoss()(simple_model(x), torch.randn(4, 2)).backward()
+            callback.on_batch_end(step=step, loss=0.5)
+        # Steps 3 and 6 pushed (internal counter ticks: 1,2,3→push,4,5,6→push)
+        assert bridge.total_pushed == 2
 
-    def test_uses_global_bridge_when_none_passed(self):
-        model    = self._simple_model()
-        callback = StreamlitCallback(model, bridge=None)
-        assert callback.bridge is get_global_bridge()
+    def test_reset_clears_counter(self, simple_model):
+        bridge   = LiveGradientBridge()
+        callback = StreamlitCallback(simple_model, bridge, push_every_n_steps=5)
+        for step in range(4):
+            callback.on_batch_end(step=step, loss=0.1)
+        callback.reset()
+        callback.on_batch_end(step=10, loss=0.1)
+        # After reset, counter is 1 — only the first push after reset (at step 5) counts
+        assert bridge.total_pushed == 0  # never hit multiple of 5
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # ExpertEngine
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-class TestExpertEngineSafeNorm:
-    def test_returns_grad_norm_when_positive(self):
-        s = _make_stats(n=1)[0]
-        s.grad_norm = 0.77
-        assert _safe_norm(s) == pytest.approx(0.77)
-
-    def test_falls_back_to_abs_mean(self):
-        s = _make_stats(n=1)[0]
-        s.grad_norm = 0.0
-        s.mean = -0.5
-        assert _safe_norm(s) == pytest.approx(0.5 + 1e-12)
-
-
-class TestExpertEngineAnalyze:
-    def test_empty_report_returns_no_findings(self):
-        empty   = GradientReport(layer_stats=[], global_mean=0.0, global_std=0.0, num_steps=0)
-        engine  = ExpertEngine()
-        assert engine.analyze(empty) == []
-
-    def test_healthy_report_returns_info_finding(self):
+class TestExpertEngineFindings:
+    def test_healthy_report_returns_no_critical_findings(self):
         report  = _make_report(n=4)
-        engine  = ExpertEngine(vanishing_threshold=1e-12)
-        findings = engine.analyze(report)
-        # Should have at most one info finding (global health ok)
-        severities = {f.severity for f in findings}
-        assert severities <= {"info"}
-
-    def test_vanishing_report_produces_critical_finding(self):
-        report  = _make_report(n=4, vanishing=True)
-        engine  = ExpertEngine(vanishing_threshold=1e-7)
-        findings = engine.analyze(report)
-        rule_ids = {f.rule_id for f in findings}
-        assert "vanishing_layers" in rule_ids
-
-    def test_exploding_report_produces_critical_finding(self):
-        report  = _make_report(n=4, exploding=True)
-        engine  = ExpertEngine(exploding_threshold=1e3)
-        findings = engine.analyze(report)
-        rule_ids = {f.rule_id for f in findings}
-        assert "exploding_layers" in rule_ids
-
-    def test_findings_sorted_critical_first(self):
-        report  = _make_report(n=6, vanishing=True, exploding=True)
         engine  = ExpertEngine()
-        findings = engine.analyze(report)
+        findings = engine.analyse(report)
+        crit = [f for f in findings if f.severity == "critical"]
+        assert len(crit) == 0
+
+    def test_vanishing_rule_fires(self):
+        report   = _make_report(n=4, vanishing=True)
+        engine   = ExpertEngine(vanishing_threshold=1e-7)
+        findings = engine.analyse(report)
+        ids = [f.rule_id for f in findings]
+        assert "vanishing_layers" in ids
+
+    def test_exploding_rule_fires(self):
+        report   = _make_report(n=4, exploding=True)
+        engine   = ExpertEngine(exploding_threshold=1e3)
+        findings = engine.analyse(report)
+        ids = [f.rule_id for f in findings]
+        assert "exploding_layers" in ids
+
+    def test_dead_neuron_rule_fires(self):
+        report   = _make_report(n=4, dead=True)
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
+        # layer_index=1 has zero_ratio=0.95 > 0.9 threshold
+        ids = [f.rule_id for f in findings]
+        assert "dead_neurons" in ids
+
+    def test_findings_sorted_by_severity(self):
+        report   = _make_report(n=6, vanishing=True, dead=True)
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
         if len(findings) >= 2:
-            assert findings[0].severity in ("critical", "warning")
+            for i in range(len(findings) - 1):
+                assert findings[i].severity_rank <= findings[i + 1].severity_rank
 
-    def test_analyze_layer_filters_by_layer(self):
-        report  = _make_report(n=6, vanishing=True)
-        engine  = ExpertEngine(vanishing_threshold=1e-7)
-        # First layer is vanishing
-        van_name = next(
-            s.layer_name for s in report.layer_stats
-            if s.diagnose() == GradientPathology.VANISHING
-        )
-        layer_findings = engine.analyze_layer(van_name, report)
-        assert len(layer_findings) >= 1
-        assert all(van_name in f.affected_layers for f in layer_findings)
+    def test_quick_summary_format(self):
+        report  = _make_report(n=4, vanishing=True)
+        engine  = ExpertEngine()
+        summary = engine.quick_summary(report)
+        assert isinstance(summary, str)
+        assert len(summary) > 0
 
-    def test_top_finding_returns_most_severe(self):
-        report = _make_report(n=6, vanishing=True)
-        engine = ExpertEngine(vanishing_threshold=1e-7)
-        top    = engine.top_finding(report)
-        assert top is not None
-        assert top.severity == "critical"
+    def test_quick_summary_healthy(self):
+        report  = _make_report(n=4)
+        engine  = ExpertEngine()
+        summary = engine.quick_summary(report)
+        assert "✅" in summary
 
-    def test_top_finding_returns_none_for_empty(self):
-        empty  = GradientReport(layer_stats=[], global_mean=0.0, global_std=0.0, num_steps=0)
+    def test_custom_rule_registered(self):
+        report = _make_report(n=4)
         engine = ExpertEngine()
-        assert engine.top_finding(empty) is None
+
+        @engine.register_rule
+        def my_rule(r: GradientReport) -> list:
+            return [ExpertFinding(
+                rule_id="my_custom",
+                severity="info",
+                title="Custom rule fired",
+                detail="detail",
+            )]
+
+        findings = engine.analyse(report)
+        ids = [f.rule_id for f in findings]
+        assert "my_custom" in ids
+
+    def test_finding_has_code_hint_for_vanishing(self):
+        report   = _make_report(n=4, vanishing=True)
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
+        van = next(f for f in findings if f.rule_id == "vanishing_layers")
+        assert len(van.code_hint) > 0
+
+    def test_finding_lists_affected_layers(self):
+        report   = _make_report(n=4, vanishing=True)
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
+        van = next(f for f in findings if f.rule_id == "vanishing_layers")
+        assert len(van.layers) > 0
+
+    def test_no_layernorm_rule_fires_for_deep_network(self):
+        """Build a report where every layer is OTHER group (no LN) and depth >= threshold."""
+        stats = []
+        for i in range(15):
+            s = LayerGradientStats(
+                layer_name=f"fc_{i}.weight",
+                layer_index=i,
+                mean=1e-3,
+                std=1e-4,
+                min=-1e-3, max=1e-3, median=1e-3,
+                num_zeros=0,
+                total_params=64,
+                layer_type="Linear",
+                depth=i,
+                group=LayerGroup.OTHER,  # no LAYER_NORM
+                grad_norm=1e-2,
+            )
+            stats.append(s)
+        report = GradientReport(
+            layer_stats=stats,
+            global_mean=1e-3, global_std=1e-4,
+            num_steps=10, data_source="synthetic",
+        )
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
+        ids = [f.rule_id for f in findings]
+        assert "no_layernorm" in ids or "no_layernorm_vanishing" in ids
+
+    def test_bottleneck_cascade_rule_fires(self):
+        """Create stats where norm drops by >50% from depth 0 to depth 1."""
+        stats = []
+        norms = [1.0, 0.1, 0.08, 0.07, 0.06]
+        for i, gn in enumerate(norms):
+            s = LayerGradientStats(
+                layer_name=f"layer_{i}.w",
+                layer_index=i,
+                mean=gn * 0.1, std=gn * 0.01,
+                min=-gn, max=gn, median=gn * 0.1,
+                num_zeros=0, total_params=64,
+                layer_type="Linear", depth=i,
+                group=LayerGroup.OTHER,
+                grad_norm=gn,
+            )
+            stats.append(s)
+        report = GradientReport(
+            layer_stats=stats,
+            global_mean=0.1, global_std=0.1,
+            num_steps=5, data_source="synthetic",
+        )
+        engine   = ExpertEngine(bottleneck_drop_ratio=0.5)
+        findings = engine.analyse(report)
+        ids = [f.rule_id for f in findings]
+        assert "bottleneck_cascade" in ids
 
 
-class TestExpertFindingProperties:
-    def test_severity_emoji(self):
+class TestExpertEngineFindingDataclass:
+    def test_finding_emoji_critical(self):
         f = ExpertFinding(
-            rule_id="test", severity="critical",
-            headline="test", detail="",
+            rule_id="x", severity="critical", title="t", detail="d"
         )
-        assert f.severity_emoji == "🚨"
+        assert f.emoji == "🚨"
 
-    def test_severity_color_critical(self):
-        f = ExpertFinding(rule_id="x", severity="critical", headline="", detail="")
-        assert f.severity_color == "#E74C3C"
-
-    def test_severity_color_warning(self):
-        f = ExpertFinding(rule_id="x", severity="warning", headline="", detail="")
-        assert f.severity_color == "#F39C12"
-
-
-class TestExpertEngineRules:
-    def test_dead_neurons_rule_fires_on_high_zero_ratio(self):
-        stats = _make_stats(n=4)
-        # Force one layer to have high zero_ratio
-        stats[0].num_zeros   = 62
-        stats[0].total_params = 64
-        report = GradientReport(
-            layer_stats=stats,
-            global_mean=1e-3, global_std=1e-4, num_steps=5
+    def test_finding_emoji_warning(self):
+        f = ExpertFinding(
+            rule_id="x", severity="warning", title="t", detail="d"
         )
-        engine   = ExpertEngine()
-        findings = engine.analyze(report)
-        rule_ids = {f.rule_id for f in findings}
-        assert "dead_neurons" in rule_ids
+        assert f.emoji == "⚠️"
 
-    def test_structural_bottleneck_rule_fires_on_sharp_drop(self):
-        stats = _make_stats(n=4)
-        # Force a huge drop: layer 0 norm = 100, layer 1 norm = 0.001
-        stats[3].grad_norm = 100.0   # depth 3 = shallowest after reverse sort
-        stats[2].grad_norm = 0.001
-        report = GradientReport(
-            layer_stats=stats,
-            global_mean=1e-3, global_std=1e-4, num_steps=5
+    def test_finding_emoji_info(self):
+        f = ExpertFinding(
+            rule_id="x", severity="info", title="t", detail="d"
         )
-        engine   = ExpertEngine(bottleneck_drop_ratio=0.3)
-        findings = engine.analyze(report)
-        rule_ids = {f.rule_id for f in findings}
-        assert "structural_bottleneck" in rule_ids
+        assert f.emoji == "ℹ️"
 
-    def test_attention_collapse_rule_fires_for_attn_vanishing(self):
-        stats = _make_stats(n=4)
-        # Make an ATTENTION layer vanishing
-        for s in stats:
-            if s.group == LayerGroup.ATTENTION:
-                s.grad_norm = 1e-10
-                s.mean      = 1e-10
-                break
-        report = GradientReport(
-            layer_stats=stats, global_mean=1e-3, global_std=1e-4, num_steps=5
-        )
-        engine   = ExpertEngine(vanishing_threshold=1e-7)
-        findings = engine.analyze(report)
-        rule_ids = {f.rule_id for f in findings}
-        assert "attention_collapse" in rule_ids
-
-    def test_all_findings_have_rule_id(self):
-        report   = _make_report(n=6, vanishing=True, exploding=True)
-        engine   = ExpertEngine()
-        findings = engine.analyze(report)
-        for f in findings:
-            assert f.rule_id, "Finding must have a non-empty rule_id"
-
-    def test_all_critical_findings_have_recommendations(self):
-        report   = _make_report(n=6, vanishing=True, exploding=True)
-        engine   = ExpertEngine()
-        findings = engine.analyze(report)
-        for f in findings:
-            if f.severity == "critical":
-                assert len(f.recommendations) > 0
-
-    def test_all_critical_findings_have_code_snippets(self):
-        report   = _make_report(n=6, vanishing=True)
-        engine   = ExpertEngine(vanishing_threshold=1e-7)
-        findings = engine.analyze(report)
-        for f in findings:
-            if f.severity == "critical":
-                assert len(f.code_snippets) > 0
+    def test_severity_rank_ordering(self):
+        c = ExpertFinding(rule_id="c", severity="critical", title="", detail="")
+        w = ExpertFinding(rule_id="w", severity="warning",  title="", detail="")
+        i = ExpertFinding(rule_id="i", severity="info",     title="", detail="")
+        assert c.severity_rank < w.severity_rank < i.severity_rank
 
 
-# ---------------------------------------------------------------------------
-# Integration: StreamlitCallback → bridge → ExpertEngine
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# inject_layer_norms utility
+# ===========================================================================
+
+class TestInjectLayerNorms:
+    def test_injects_layer_norm_after_linear(self):
+        model = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 4))
+        new_model = inject_layer_norms(model)
+        has_ln = any(isinstance(m, nn.LayerNorm) for m in new_model.modules())
+        assert has_ln
+
+    def test_non_sequential_returned_unchanged(self):
+        model = nn.Linear(4, 4)
+        result = inject_layer_norms(model)
+        assert result is model
+
+
+# ===========================================================================
+# Integration: bridge + callback + engine
+# ===========================================================================
 
 class TestPhase4Integration:
-    def setup_method(self):
-        reset_global_bridge()
+    def test_full_training_loop_integration(self, simple_model):
+        """Simulate 10 training steps and verify bridge + engine work end-to-end."""
+        bridge   = LiveGradientBridge(max_steps=50)
+        callback = StreamlitCallback(simple_model, bridge)
+        optimizer = torch.optim.SGD(simple_model.parameters(), lr=0.01)
 
-    def teardown_method(self):
-        reset_global_bridge()
-
-    def test_full_pipeline_no_crash(self):
-        """Train for 3 steps, build a report, run expert engine."""
-        model  = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 4))
-        bridge = LiveGradientBridge()
-        cb     = StreamlitCallback(
-            model, bridge=bridge, report_every_n_steps=2
-        )
-
-        for step in range(3):
-            x    = torch.randn(4, 8)
-            y    = torch.randn(4, 4)
-            loss = nn.functional.mse_loss(model(x), y)
+        for step in range(10):
+            optimizer.zero_grad()
+            x = torch.randn(4, 8)
+            y = torch.randn(4, 2)
+            loss = nn.MSELoss()(simple_model(x), y)
             loss.backward()
-            cb.on_batch_end(loss=loss.item(), step=step)
+            optimizer.step()
+            callback.on_batch_end(step=step, loss=loss.item())
 
-        cb.on_train_end()
+        assert bridge.total_pushed == 10
+        snaps = bridge.all_snapshots()
+        assert all(math.isfinite(s.loss) for s in snaps)
 
-        snap = bridge.snapshot()
-        assert snap["total_steps"] == 3
-        assert snap["is_training"] is False
+        # Verify metrics_series is consistent
+        steps_l, losses = bridge.metrics_series("loss")
+        assert len(steps_l) == 10
+        assert all(math.isfinite(v) for v in losses)
 
-        # If a report was built, run the expert engine on it
-        if snap["current_report"] is not None:
-            engine   = ExpertEngine()
-            findings = engine.analyze(snap["current_report"])
-            assert isinstance(findings, list)
+    def test_engine_on_analyzer_report(self, simple_model):
+        """Verify ExpertEngine accepts a real GradientAnalyzer report."""
+        from gradient_pathology.analyzer import GradientAnalyzer
+        analyzer = GradientAnalyzer(simple_model)
+        report   = analyzer.diagnose(num_steps=5, input_shape=(8,))
+
+        engine   = ExpertEngine()
+        findings = engine.analyse(report)
+        # Should not crash and return a list (may be empty for small healthy model)
+        assert isinstance(findings, list)
+
+    def test_hf_adapter_does_not_crash_without_transformers(self, simple_model):
+        """HuggingFaceCallbackAdapter must not raise ImportError on import."""
+        from gradient_pathology.monitor.callback import HuggingFaceCallbackAdapter
+        bridge  = LiveGradientBridge()
+        adapter = HuggingFaceCallbackAdapter(simple_model, bridge)
+        assert adapter is not None
