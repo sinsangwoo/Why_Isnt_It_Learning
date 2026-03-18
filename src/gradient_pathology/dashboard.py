@@ -1,7 +1,9 @@
 """Real-time gradient monitoring dashboard using Streamlit.
 
-Phase-2 upgrade: added a Heatmap tab that renders the interactive
-architecture-graph Heatmap alongside the existing text report tab.
+Phase-3 upgrade: three-tab layout
+    🌊 Sankey Flow     — information-loss Sankey + layer deep-dive panel
+    🌡️  Architecture Heatmap — Phase-2 node-graph heatmap
+    📊 Classic Report  — original bar chart + text report
 """
 
 from typing import Dict
@@ -16,10 +18,11 @@ from gradient_pathology.analyzer import GradientAnalyzer
 from gradient_pathology.core import GradientPathology, GradientReport
 from gradient_pathology.experiments import create_deep_network
 from gradient_pathology.heatmap.dashboard_tab import render_heatmap_tab
+from gradient_pathology.sankey.dashboard_tab import render_sankey_tab
 
 
 def plot_gradient_distribution(report: GradientReport) -> plt.Figure:
-    """Plot gradient distribution across layers."""
+    """Plot gradient distribution across layers (Classic tab)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     layer_indices = [s.layer_index for s in report.layer_stats]
@@ -71,7 +74,7 @@ def run_dashboard() -> None:
     """
     )
 
-    # Sidebar: Model configuration
+    # ── Sidebar ────────────────────────────────────────────────────────────
     st.sidebar.header("Model Configuration")
     depth       = st.sidebar.slider("Network Depth",  5,   100, 20)
     activation  = st.sidebar.selectbox("Activation",  ["relu", "sigmoid", "tanh", "gelu"])
@@ -102,7 +105,7 @@ def run_dashboard() -> None:
         report = st.session_state["report"]
         config = st.session_state["model_config"]
 
-        # Summary metrics
+        # ── Summary metrics ─────────────────────────────────────────────
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Global Mean Gradient", f"{report.global_mean:.2e}")
@@ -122,11 +125,15 @@ def run_dashboard() -> None:
             )
             st.metric("Health Score", f"{healthy_ratio:.1f}%")
 
-        # ── Tabs: Heatmap (new) | Classic report ──────────────────────────────
-        tab_heatmap, tab_classic = st.tabs([
+        # ── Three-tab layout ─────────────────────────────────────────────
+        tab_sankey, tab_heatmap, tab_classic = st.tabs([
+            "🌊 Sankey Flow",
             "🌡️ Architecture Heatmap",
             "📊 Classic Report",
         ])
+
+        with tab_sankey:
+            render_sankey_tab(report)
 
         with tab_heatmap:
             render_heatmap_tab(report)
