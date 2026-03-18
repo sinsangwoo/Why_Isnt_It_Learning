@@ -1,44 +1,36 @@
-"""Phase-4 ExpertEngine — deep, layer-aware diagnostic system.
+"""Phase-4 ExpertEngine: a layer-aware, rule-based diagnostic engine.
 
-The original :class:`~gradient_pathology.expert.rules.ExpertSystem` worked
-at the *model level* (architecture shape, global gradient stats).  The
-``ExpertEngine`` introduced here works at the *layer level*: it takes the
-full :class:`~gradient_pathology.core.GradientReport` produced by
-:class:`~gradient_pathology.analyzer.GradientAnalyzer` and returns structured
-:class:`ExpertFinding` objects that the dashboard can render as interactive
-popup panels.
+This module *extends* the original :class:`~gradient_pathology.expert.rules.ExpertSystem`
+(which operates on scalar global statistics) with a second engine that
+operates on the full :class:`~gradient_pathology.core.GradientReport`,
+checking every layer individually and cross-layer patterns.
 
 Design
 ------
-Each ``ExpertFinding`` bundles:
+The engine is composed of *rules* — pure functions that each receive the
+:class:`~gradient_pathology.core.GradientReport` and return a list of
+:class:`ExpertFinding` objects.  Rules are registered via
+:meth:`ExpertEngine.register_rule` and executed in definition order.
 
-* A **severity** badge (``critical`` / ``warning`` / ``info``).
-* A short **headline** (shown in the notification banner).
-* A long-form **detail** block (shown in the expanded popup).
-* A list of **code snippets** — copy-pasteable PyTorch fixes.
-* The **affected_layers** list for cross-linking with the Heatmap/Sankey.
-* A **confidence** float and a **rule_id** for filtering.
+Each :class:`ExpertFinding` carries:
 
-Firing order
-------------
-Rules are fired in priority order (``critical`` first).  Each rule is a
-method prefixed ``_rule_``.  New rules can be added simply by adding
-more ``_rule_`` methods.
+* ``rule_id``     — unique identifier (e.g. ``"vanishing_cascade"``)
+* ``severity``    — ``"critical"`` | ``"warning"`` | ``"info"``
+* ``title``       — one-line headline shown in the popup banner
+* ``detail``      — multi-line markdown explanation
+* ``layers``      — list of affected layer names
+* ``code_hint``   — ready-to-paste Python snippet (optional)
+* ``confidence``  — 0–1 float
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from gradient_pathology.core import (
-    GradientPathology,
-    GradientReport,
-    LayerGradientStats,
-    LayerGroup,
-)
+from gradient_pathology.core import GradientPathology, GradientReport, LayerGroup
 
 
 # ---------------------------------------------------------------------------
@@ -47,486 +39,416 @@ from gradient_pathology.core import (
 
 @dataclass
 class ExpertFinding:
-    """A single structured diagnostic finding from the expert engine.
+    """A single diagnostic finding produced by one rule."""
 
-    Attributes
-    ----------
-    rule_id:
-        Short snake_case identifier for this rule (e.g. ``vanishing_deep``).
-    severity:
-        ``'critical'``, ``'warning'``, or ``'info'``.
-    headline:
-        One-line summary shown in notification banners.
-    detail:
-        Multi-line Markdown explanation shown in the expanded popup.
-    recommendations:
-        Ordered list of actionable fix strings.
-    code_snippets:
-        Dict mapping a label to a PyTorch code string.  E.g.
-        ``{"Add gradient clipping": "torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)"}``.
-    affected_layers:
-        Layer names that triggered this finding.
-    confidence:
-        Float 0-1 indicating rule confidence.
-    """
+    rule_id:    str
+    severity:   str        # "critical" | "warning" | "info"
+    title:      str
+    detail:     str        # markdown
+    layers:     List[str]  = field(default_factory=list)
+    code_hint:  str        = ""
+    confidence: float      = 1.0
 
-    rule_id:         str
-    severity:        str   # 'critical' | 'warning' | 'info'
-    headline:        str
-    detail:          str
-    recommendations: List[str]  = field(default_factory=list)
-    code_snippets:   Dict[str, str] = field(default_factory=dict)
-    affected_layers: List[str]  = field(default_factory=list)
-    confidence:      float      = 1.0
-
-    # Convenience -------------------------------------------------------
+    # Canonical severity ordering for sorting
+    _SEVERITY_ORDER: Dict[str, int] = field(
+        default_factory=lambda: {"critical": 0, "warning": 1, "info": 2},
+        repr=False, compare=False,
+    )
 
     @property
-    def severity_emoji(self) -> str:
-        return {
-            "critical": "🚨",
-            "warning":  "⚠️",
-            "info":     "ℹ️",
-        }.get(self.severity, "🔵")
+    def severity_rank(self) -> int:
+        return self._SEVERITY_ORDER.get(self.severity, 3)
 
     @property
-    def severity_color(self) -> str:
-        return {
-            "critical": "#E74C3C",
-            "warning":  "#F39C12",
-            "info":     "#3498DB",
-        }.get(self.severity, "#95A5A6")
+    def emoji(self) -> str:
+        return {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(self.severity, "")
+
+
+# Rule type alias
+RuleFunc = Callable[[GradientReport], List[ExpertFinding]]
 
 
 # ---------------------------------------------------------------------------
-# Engine
+# ExpertEngine
 # ---------------------------------------------------------------------------
 
 class ExpertEngine:
-    """Layer-aware expert system that converts a :class:`GradientReport`
-    into a list of :class:`ExpertFinding` objects.
+    """Layer-aware, rule-based expert diagnostic engine.
 
-    Parameters
-    ----------
-    vanishing_threshold:
-        ``grad_norm`` below this value → vanishing diagnosis.
-    exploding_threshold:
-        ``grad_norm`` above this value → exploding diagnosis.
-    bottleneck_drop_ratio:
-        Relative grad_norm drop between consecutive layers that qualifies
-        as a structural bottleneck.
-    unstable_cv_threshold:
-        Coefficient of variation (``std / |mean|``) threshold above which
-        a layer is considered unstable.
-
-    Examples
-    --------
+    Usage
+    -----
     ::
 
+        from gradient_pathology.expert.engine import ExpertEngine
+
         engine   = ExpertEngine()
-        findings = engine.analyze(report)
+        findings = engine.analyse(report)
         for f in findings:
-            print(f.severity_emoji, f.headline)
+            print(f.emoji, f.title)
+            print(f.detail)
+            if f.code_hint:
+                print(f.code_hint)
+
+    Custom rules
+    ------------
+    ::
+
+        @engine.register_rule
+        def my_rule(report: GradientReport) -> list[ExpertFinding]:
+            # inspect report.layer_stats…
+            return [ExpertFinding(rule_id="my", severity="info", title="…", detail="…")]
     """
+
+    # Built-in rule thresholds (overridable via constructor)
+    VANISHING_THRESHOLD   = 1e-7
+    EXPLODING_THRESHOLD   = 1e3
+    DEAD_NEURON_RATIO     = 0.9
+    BOTTLENECK_DROP_RATIO = 0.5   # cascade drop threshold
+    ATTENTION_NORM_FLOOR  = 1e-6  # specific to Attention group
+    LN_NORM_CEIL          = 1e2   # suspiciously large LayerNorm grad
+    MIN_LAYERS_FOR_NORM_CHECK = 10
 
     def __init__(
         self,
-        vanishing_threshold:  float = 1e-7,
-        exploding_threshold:  float = 1e3,
-        bottleneck_drop_ratio: float = 0.6,
-        unstable_cv_threshold: float = 30.0,
+        vanishing_threshold: float   = VANISHING_THRESHOLD,
+        exploding_threshold: float   = EXPLODING_THRESHOLD,
+        bottleneck_drop_ratio: float = BOTTLENECK_DROP_RATIO,
     ) -> None:
         self.vanishing_threshold   = vanishing_threshold
         self.exploding_threshold   = exploding_threshold
         self.bottleneck_drop_ratio = bottleneck_drop_ratio
-        self.unstable_cv_threshold = unstable_cv_threshold
+        self._rules: List[RuleFunc] = []
+        self._register_builtin_rules()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def analyze(self, report: GradientReport) -> List[ExpertFinding]:
-        """Run all diagnostic rules and return findings sorted by severity.
-
-        Parameters
-        ----------
-        report:
-            Full gradient analysis report.
-
-        Returns
-        -------
-        list[ExpertFinding]
-            Sorted: critical first, then warning, then info.
-        """
-        if not report.layer_stats:
-            return []
-
+    def analyse(self, report: GradientReport) -> List[ExpertFinding]:
+        """Run all registered rules against *report* and return sorted findings."""
         findings: List[ExpertFinding] = []
-
-        findings += self._rule_vanishing_layers(report)
-        findings += self._rule_exploding_layers(report)
-        findings += self._rule_dead_neurons(report)
-        findings += self._rule_structural_bottleneck(report)
-        findings += self._rule_attention_collapse(report)
-        findings += self._rule_norm_layer_bypass(report)
-        findings += self._rule_gradient_imbalance(report)
-        findings += self._rule_global_health(report)
-
-        # Sort: critical < warning < info, break ties by confidence desc.
-        order = {"critical": 0, "warning": 1, "info": 2}
-        findings.sort(key=lambda f: (order.get(f.severity, 3), -f.confidence))
+        for rule in self._rules:
+            try:
+                findings.extend(rule(report))
+            except Exception:  # pragma: no cover — rule bugs must not crash the UI
+                pass
+        findings.sort(key=lambda f: (f.severity_rank, -f.confidence))
         return findings
 
-    def analyze_layer(
-        self,
-        layer_name: str,
-        report: GradientReport,
-    ) -> List[ExpertFinding]:
-        """Return findings that directly implicate *layer_name*."""
-        return [
-            f for f in self.analyze(report)
-            if layer_name in f.affected_layers
-        ]
+    def register_rule(self, func: RuleFunc) -> RuleFunc:
+        """Decorator / callable to add a custom rule."""
+        self._rules.append(func)
+        return func
 
-    def top_finding(self, report: GradientReport) -> Optional[ExpertFinding]:
-        """Return the single most severe finding, or ``None``."""
-        findings = self.analyze(report)
-        return findings[0] if findings else None
+    def quick_summary(self, report: GradientReport) -> str:
+        """Return a one-line health summary string."""
+        findings = self.analyse(report)
+        if not findings:
+            return "✅ All layers healthy — no issues detected."
+        crit = sum(1 for f in findings if f.severity == "critical")
+        warn = sum(1 for f in findings if f.severity == "warning")
+        parts = []
+        if crit:
+            parts.append(f"{crit} critical")
+        if warn:
+            parts.append(f"{warn} warning")
+        return "🚨 " + ", ".join(parts) + f" (×{len(findings)} findings total)"
 
     # ------------------------------------------------------------------
-    # Diagnostic rules
+    # Built-in rules
     # ------------------------------------------------------------------
 
-    def _rule_vanishing_layers(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect layers with grad_norm below the vanishing threshold."""
+    def _register_builtin_rules(self) -> None:
+        """Register the 7 built-in diagnostic rules."""
+        self._rules.extend([
+            self._rule_vanishing_layers,
+            self._rule_exploding_layers,
+            self._rule_dead_neurons,
+            self._rule_bottleneck_cascade,
+            self._rule_missing_layer_norm,
+            self._rule_attention_health,
+            self._rule_layernorm_explosion,
+        ])
+
+    # Rule 1 — Vanishing layers -----------------------------------------------
+
+    def _rule_vanishing_layers(self, report: GradientReport) -> List[ExpertFinding]:
         affected = [
-            s.layer_name
-            for s in report.layer_stats
+            s for s in report.layer_stats
             if _safe_norm(s) < self.vanishing_threshold
         ]
         if not affected:
             return []
-
-        pct = len(affected) / len(report.layer_stats) * 100
+        names = [s.layer_name for s in affected]
+        pct   = len(affected) / max(len(report.layer_stats), 1) * 100
         return [ExpertFinding(
             rule_id="vanishing_layers",
             severity="critical",
-            headline=(
-                f"🔴 Vanishing gradients in {len(affected)} / {len(report.layer_stats)} layers "
-                f"({pct:.0f}%)"
-            ),
+            title=f"Vanishing gradients in {len(affected)} layer(s) ({pct:.0f}%)",
             detail=(
-                "Gradients are effectively zero in the listed layers, meaning those layers "
-                "receive **no learning signal**. Common causes: saturating activations "
-                "(Sigmoid / Tanh in deep stacks), missing normalisation, or a learning rate "
-                "that is too small for the initialisation scale."
+                f"**{len(affected)}** layer(s) have ``grad_norm < {self.vanishing_threshold:.0e}``.\n\n"
+                "This typically means gradients cannot propagate back to early layers, "
+                "preventing those layers from learning.\n\n"
+                "**Likely causes:** sigmoid/tanh saturation, missing normalisation, "
+                "very deep network without residual connections."
             ),
-            recommendations=[
-                "Replace Sigmoid/Tanh activations with ReLU, GELU, or SiLU.",
-                "Add LayerNorm (or RMSNorm) before or after each affected layer.",
-                "Apply He/Kaiming initialisation for ReLU layers.",
-                "Add residual (skip) connections to bypass deep stacks.",
-                "Consider a higher base learning rate for earlier layers.",
-            ],
-            code_snippets={
-                "Replace activation": "nn.GELU()  # instead of nn.Sigmoid()",
-                "Add LayerNorm": "nn.Sequential(nn.Linear(d, d), nn.LayerNorm(d), nn.GELU())",
-                "He init": "nn.init.kaiming_normal_(layer.weight, nonlinearity='relu')",
-            },
-            affected_layers=affected,
-            confidence=0.95,
+            layers=names,
+            code_hint=(
+                "# Option 1: Replace saturating activations\n"
+                "model = replace_activations(model, nn.Sigmoid, nn.GELU)\n\n"
+                "# Option 2: Add LayerNorm after each Linear\n"
+                "# Linear → LayerNorm → GELU  (PreLN pattern)\n\n"
+                "# Option 3: Increase learning rate for early layers\n"
+                "from gradient_pathology.auto import LayerLRFinder\n"
+                "finder = LayerLRFinder(model, optimizer)\n"
+                "lrs    = finder.suggest_layer_lrs()"
+            ),
+            confidence=0.97,
         )]
 
-    def _rule_exploding_layers(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect layers with grad_norm above the exploding threshold."""
+    # Rule 2 — Exploding layers -----------------------------------------------
+
+    def _rule_exploding_layers(self, report: GradientReport) -> List[ExpertFinding]:
         affected = [
-            s.layer_name
-            for s in report.layer_stats
+            s for s in report.layer_stats
             if _safe_norm(s) > self.exploding_threshold
         ]
         if not affected:
             return []
-
+        names = [s.layer_name for s in affected]
         return [ExpertFinding(
             rule_id="exploding_layers",
             severity="critical",
-            headline=f"🟠 Exploding gradients in {len(affected)} layers",
+            title=f"Exploding gradients in {len(affected)} layer(s)",
             detail=(
-                "Gradient norms are orders of magnitude above normal in the listed layers. "
-                "This typically causes NaN losses within a few steps and is often caused by "
-                "a learning rate that is too high, missing gradient clipping, or a poor "
-                "weight initialisation."
+                f"**{len(affected)}** layer(s) exceed ``grad_norm > {self.exploding_threshold:.0e}``.\n\n"
+                "Unchecked, exploding gradients will corrupt weights and cause NaN loss.\n\n"
+                "**Likely causes:** bad weight initialisation, high learning rate, "
+                "missing gradient clipping."
             ),
-            recommendations=[
-                "Apply gradient clipping immediately.",
-                "Reduce the global learning rate by 5-10x.",
-                "Verify weight initialisation (use Xavier for Tanh, He for ReLU).",
-                "Add LayerNorm or BatchNorm to regularise activation scale.",
-            ],
-            code_snippets={
-                "Gradient clipping": "torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)",
-                "Reduce LR": "optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)",
-            },
-            affected_layers=affected,
-            confidence=0.93,
+            layers=names,
+            code_hint=(
+                "# Clip gradients before optimizer.step()\n"
+                "torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)\n\n"
+                "# Or use gradient clipping in the Trainer:\n"
+                "TrainingArguments(max_grad_norm=1.0, ...)"
+            ),
+            confidence=0.99,
         )]
 
-    def _rule_dead_neurons(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect layers where the zero-gradient ratio is above 90%."""
+    # Rule 3 — Dead neurons ---------------------------------------------------
+
+    def _rule_dead_neurons(self, report: GradientReport) -> List[ExpertFinding]:
         affected = [
-            s.layer_name
-            for s in report.layer_stats
-            if s.zero_ratio > 0.9
+            s for s in report.layer_stats
+            if s.zero_ratio > self.DEAD_NEURON_RATIO
         ]
         if not affected:
             return []
-
+        names = [s.layer_name for s in affected]
+        worst = max(affected, key=lambda s: s.zero_ratio)
         return [ExpertFinding(
             rule_id="dead_neurons",
-            severity="critical",
-            headline=f"🟣 Dead neurons detected in {len(affected)} layers",
-            detail=(
-                "More than 90% of gradient values are exactly zero in the listed layers. "
-                "With ReLU activations this is the \"dying ReLU\" phenomenon: neurons that "
-                "output zero for all inputs and never recover."
-            ),
-            recommendations=[
-                "Switch from ReLU to Leaky ReLU (negative_slope=0.01) or GELU.",
-                "Check for large negative biases — initialise biases to zero or small positive values.",
-                "Reduce the learning rate to prevent large weight updates that kill ReLUs.",
-                "Re-initialise affected layer weights.",
-            ],
-            code_snippets={
-                "Leaky ReLU": "nn.LeakyReLU(negative_slope=0.01)",
-                "Zero-init bias": "nn.init.zeros_(layer.bias)",
-            },
-            affected_layers=affected,
-            confidence=0.90,
-        )]
-
-    def _rule_structural_bottleneck(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect sudden gradient-norm drops between consecutive layers."""
-        sorted_stats = sorted(report.layer_stats, key=lambda s: s.depth)
-        norms        = [_safe_norm(s) for s in sorted_stats]
-        peak         = max(norms) if norms else 1.0
-
-        bottleneck_pairs: List[str] = []
-        for i in range(len(sorted_stats) - 1):
-            drop = (norms[i] - norms[i + 1]) / (peak + 1e-12)
-            if drop > self.bottleneck_drop_ratio:
-                bottleneck_pairs.append(
-                    f"{sorted_stats[i].layer_name} → {sorted_stats[i + 1].layer_name} "
-                    f"(drop {drop * 100:.0f}%)"
-                )
-
-        if not bottleneck_pairs:
-            return []
-
-        affected = [
-            sorted_stats[i].layer_name
-            for i in range(len(sorted_stats) - 1)
-            if (norms[i] - norms[i + 1]) / (peak + 1e-12) > self.bottleneck_drop_ratio
-        ] + [
-            sorted_stats[i + 1].layer_name
-            for i in range(len(sorted_stats) - 1)
-            if (norms[i] - norms[i + 1]) / (peak + 1e-12) > self.bottleneck_drop_ratio
-        ]
-
-        pair_list = "\n".join(f"- {p}" for p in bottleneck_pairs[:5])
-        return [ExpertFinding(
-            rule_id="structural_bottleneck",
             severity="warning",
-            headline=f"⚠️ Structural gradient bottleneck(s) at {len(bottleneck_pairs)} transition(s)",
+            title=f"Dead neurons: {len(affected)} layer(s) with >90% zero gradients",
             detail=(
-                f"The gradient norm drops sharply (>{self.bottleneck_drop_ratio * 100:.0f}% "
-                f"of peak) at the following layer boundaries, indicating that information is "
-                f"not flowing smoothly through the backward pass:\n\n{pair_list}\n\n"
-                "This is often caused by a missing residual connection, a very deep block "
-                "without normalisation, or a sudden change in layer width."
+                f"Worst layer: **{worst.layer_name}** ({worst.zero_ratio:.0%} zeros).\n\n"
+                "Dead neurons never update and permanently reduce model capacity.\n\n"
+                "**Likely causes:** ReLU with large negative biases, very high LR in early training."
             ),
-            recommendations=[
-                "Add a residual (skip) connection across the bottleneck block.",
-                "Insert a LayerNorm between the two flagged layers.",
-                "Smooth the layer-width transition with gradual bottleneck sizing.",
-                "Apply layer-wise learning rate scaling to compensate.",
-            ],
-            code_snippets={
-                "Residual block": (
-                    "class ResBlock(nn.Module):\n"
-                    "    def forward(self, x):\n"
-                    "        return x + self.layers(x)  # skip connection"
-                ),
-            },
-            affected_layers=list(dict.fromkeys(affected)),  # deduplicate, preserve order
-            confidence=0.80,
+            layers=names,
+            code_hint=(
+                "# Switch from ReLU to Leaky ReLU or GELU:\n"
+                "nn.LeakyReLU(negative_slope=0.01)  # avoids dying ReLU\n"
+                "nn.GELU()                           # smooth gradient everywhere\n\n"
+                "# Check for large negative biases:\n"
+                "for name, p in model.named_parameters():\n"
+                "    if 'bias' in name and p.data.min() < -5:\n"
+                "        print(f'Large neg bias: {name}: {p.data.min():.2f}')"
+            ),
+            confidence=0.92,
         )]
 
-    def _rule_attention_collapse(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect vanishing / near-zero gradients specifically in Attention layers."""
-        attn_stats = [
-            s for s in report.layer_stats
-            if s.group == LayerGroup.ATTENTION
-        ]
-        if not attn_stats:
+    # Rule 4 — Bottleneck cascade --------------------------------------------
+
+    def _rule_bottleneck_cascade(self, report: GradientReport) -> List[ExpertFinding]:
+        """Detect consecutive depth-ordered layers where norm drops sharply."""
+        sorted_stats = sorted(report.layer_stats, key=lambda s: s.depth)
+        if len(sorted_stats) < 3:
             return []
 
-        collapsed = [
-            s.layer_name for s in attn_stats
-            if _safe_norm(s) < self.vanishing_threshold * 100
-        ]
-        if not collapsed:
+        norms   = [_safe_norm(s) for s in sorted_stats]
+        peak    = max(norms) if norms else 1.0
+        bottlenecks: List[str] = []
+
+        for i in range(1, len(norms)):
+            drop = (norms[i - 1] - norms[i]) / (norms[i - 1] + 1e-12)
+            if drop > self.bottleneck_drop_ratio and norms[i - 1] > self.vanishing_threshold:
+                bottlenecks.append(sorted_stats[i].layer_name)
+
+        if not bottlenecks:
             return []
 
         return [ExpertFinding(
-            rule_id="attention_collapse",
-            severity="critical",
-            headline=f"🔵 Attention gradient collapse in {len(collapsed)} head(s)",
+            rule_id="bottleneck_cascade",
+            severity="warning",
+            title=f"Bottleneck cascade: {len(bottlenecks)} abrupt gradient drop(s)",
             detail=(
-                "Gradient norms in the listed attention sub-layers are extremely small. "
-                "This is the \"attention collapse\" pattern: attention weights converge to a "
-                "near-uniform distribution, providing no useful signal. Commonly caused by "
-                "missing QK normalisation, incorrect masking, or an initialisation scale that "
-                "is too large relative to the hidden dimension."
+                f"Gradient norm drops by >{self.bottleneck_drop_ratio:.0%} at "
+                f"**{len(bottlenecks)}** transition(s).\n\n"
+                "These are the points where information is most likely being lost.\n"
+                "Hover over the Sankey diagram to see exact loss fractions."
             ),
-            recommendations=[
-                "Scale QK dot-products by 1 / sqrt(d_head) — verify this scaling is in place.",
-                "Apply QK-LayerNorm (as used in PaLM / Gemini) to stabilise attention.",
-                "Reduce the initial weight scale for Q/K projections (e.g. std = 0.02 / sqrt(depth)).",
-                "Check for incorrect causal masking that forces softmax to near-uniform.",
-            ],
-            code_snippets={
-                "QK scaling": "attn_weight = (q @ k.transpose(-2, -1)) / math.sqrt(d_head)",
-                "QK LayerNorm": (
-                    "self.q_norm = nn.LayerNorm(d_head)\n"
-                    "self.k_norm = nn.LayerNorm(d_head)"
-                ),
-            },
-            affected_layers=collapsed,
+            layers=bottlenecks,
+            code_hint=(
+                "# Add residual connections around bottleneck layers:\n"
+                "class ResBlock(nn.Module):\n"
+                "    def forward(self, x):\n"
+                "        return x + self.sublayer(x)  # skip connection\n\n"
+                "# Or reduce the depth-to-width ratio at the bottleneck."
+            ),
             confidence=0.85,
         )]
 
-    def _rule_norm_layer_bypass(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Warn when LayerNorm layers carry disproportionately large gradients."""
-        norm_stats = [
+    # Rule 5 — Missing LayerNorm for deep networks ----------------------------
+
+    def _rule_missing_layer_norm(self, report: GradientReport) -> List[ExpertFinding]:
+        n_total = len(report.layer_stats)
+        if n_total < self.MIN_LAYERS_FOR_NORM_CHECK:
+            return []
+
+        n_ln = sum(
+            1 for s in report.layer_stats
+            if s.group == LayerGroup.LAYER_NORM
+        )
+        if n_ln > 0:
+            return []
+
+        # Only flag if we also have vanishing gradients
+        has_vanishing = any(
+            _safe_norm(s) < self.vanishing_threshold
+            for s in report.layer_stats
+        )
+        if not has_vanishing:
+            return [ExpertFinding(
+                rule_id="no_layernorm",
+                severity="info",
+                title=f"No LayerNorm detected in {n_total}-layer network",
+                detail=(
+                    f"The model has **{n_total}** layers but no LayerNorm/BatchNorm parameters.\n\n"
+                    "For networks with ≥10 layers, normalisation layers typically improve "
+                    "training stability and convergence speed."
+                ),
+                code_hint=(
+                    "# Add LayerNorm to an existing Sequential:\n"
+                    "from gradient_pathology.expert.engine import inject_layer_norms\n"
+                    "model = inject_layer_norms(model)  # wraps each Linear with LN"
+                ),
+                confidence=0.72,
+            )]
+
+        return [ExpertFinding(
+            rule_id="no_layernorm_vanishing",
+            severity="critical",
+            title=f"Deep network ({n_total} layers) lacks normalisation AND has vanishing gradients",
+            detail=(
+                "Combining a deep architecture with no normalisation and vanishing gradients "
+                "is a high-risk configuration.\n\n"
+                "Adding LayerNorm is the single most impactful change you can make."
+            ),
+            code_hint=(
+                "# Minimal fix: insert LayerNorm after every Linear layer\n"
+                "layers = []\n"
+                "for m in model.modules():\n"
+                "    if isinstance(m, nn.Linear):\n"
+                "        layers += [m, nn.LayerNorm(m.out_features), nn.GELU()]\n"
+                "model = nn.Sequential(*layers)"
+            ),
+            confidence=0.95,
+        )]
+
+    # Rule 6 — Attention-specific health check --------------------------------
+
+    def _rule_attention_health(self, report: GradientReport) -> List[ExpertFinding]:
+        attn_layers = [
+            s for s in report.layer_stats
+            if s.group == LayerGroup.ATTENTION
+        ]
+        if len(attn_layers) < 2:
+            return []
+
+        sick = [
+            s for s in attn_layers
+            if _safe_norm(s) < self.ATTENTION_NORM_FLOOR
+        ]
+        if not sick:
+            return []
+
+        return [ExpertFinding(
+            rule_id="attention_low_grad",
+            severity="warning",
+            title=f"Attention layers with near-zero gradients: {len(sick)}/{len(attn_layers)}",
+            detail=(
+                f"**{len(sick)}** attention projection layer(s) have "
+                f"``grad_norm < {self.ATTENTION_NORM_FLOOR:.0e}``.\n\n"
+                "Possible causes: attention collapse (all heads attending to the same token), "
+                "QK scaling issue, or excessively small learning rate for the attention block."
+            ),
+            layers=[s.layer_name for s in sick],
+            code_hint=(
+                "# Check attention entropy (requires llm diagnostics):\n"
+                "from gradient_pathology.llm import TransformerDiagnostics\n"
+                "diag = TransformerDiagnostics(model)\n"
+                "if diag.detect_attention_collapse(attn_weights):\n"
+                "    print('Attention collapsed — try reducing dropout or temp.')\n\n"
+                "# Ensure Q/K scaling:\n"
+                "scale = head_dim ** -0.5\n"
+                "attn_scores = (q @ k.T) * scale"
+            ),
+            confidence=0.80,
+        )]
+
+    # Rule 7 — LayerNorm explosion check ------------------------------------
+
+    def _rule_layernorm_explosion(self, report: GradientReport) -> List[ExpertFinding]:
+        ln_layers = [
             s for s in report.layer_stats
             if s.group == LayerGroup.LAYER_NORM
         ]
-        if not norm_stats:
+        if not ln_layers:
             return []
 
-        all_norms    = [_safe_norm(s) for s in report.layer_stats]
-        global_mean  = float(np.mean(all_norms)) if all_norms else 1.0
-        overloaded   = [
-            s.layer_name for s in norm_stats
-            if _safe_norm(s) > global_mean * 10
+        exploding_ln = [
+            s for s in ln_layers
+            if _safe_norm(s) > self.LN_NORM_CEIL
         ]
-        if not overloaded:
+        if not exploding_ln:
             return []
 
         return [ExpertFinding(
-            rule_id="norm_layer_overload",
+            rule_id="layernorm_explosion",
             severity="warning",
-            headline=f"⚠️ LayerNorm carrying 10× above-average gradients ({len(overloaded)} layers)",
+            title=f"LayerNorm parameters have very large gradients: {len(exploding_ln)} layer(s)",
             detail=(
-                "The listed LayerNorm parameters are receiving unusually large gradient updates. "
-                "This usually means the main computation pathway has vanishing gradients and the "
-                "normalisation parameters are trying to compensate — a sign that the upstream "
-                "layers are not contributing useful signal."
+                "LayerNorm scale (gamma) and shift (beta) parameters should have modest gradients.\n\n"
+                "Large gradients here often indicate that the network is trying to compensate "
+                "for poorly initialised weights or that the learning rate is too high for norm layers."
             ),
-            recommendations=[
-                "Investigate the layers immediately upstream of the flagged LayerNorm.",
-                "If upstream layers are vanishing, address those first.",
-                "Consider reducing the LayerNorm learning rate or applying weight decay.",
-            ],
-            code_snippets={
-                "LayerNorm weight decay": (
-                    "# In AdamW: exclude norm params from weight decay\n"
-                    "decay_params  = [p for n, p in model.named_parameters() if 'norm' not in n]\n"
-                    "nodecay_params = [p for n, p in model.named_parameters() if 'norm' in n]"
-                ),
-            },
-            affected_layers=overloaded,
-            confidence=0.75,
-        )]
-
-    def _rule_gradient_imbalance(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Detect high coefficient of variation in a layer's gradients."""
-        unstable = [
-            s for s in report.layer_stats
-            if abs(s.mean) > 1e-9
-            and (s.std / (abs(s.mean) + 1e-12)) > self.unstable_cv_threshold
-        ]
-        if not unstable:
-            return []
-
-        affected = [s.layer_name for s in unstable]
-        return [ExpertFinding(
-            rule_id="gradient_imbalance",
-            severity="warning",
-            headline=f"🟡 Highly unstable gradients (high CV) in {len(unstable)} layers",
-            detail=(
-                "The coefficient of variation (std / |mean|) exceeds "
-                f"{self.unstable_cv_threshold:.0f} in the listed layers, indicating that "
-                "gradient values vary wildly from batch to batch. This leads to noisy "
-                "parameter updates and unstable training loss curves."
+            layers=[s.layer_name for s in exploding_ln],
+            code_hint=(
+                "# Use a lower LR for LayerNorm parameters:\n"
+                "param_groups = [\n"
+                "    {'params': [p for n, p in model.named_parameters() if 'norm' not in n]},\n"
+                "    {'params': [p for n, p in model.named_parameters() if 'norm' in n], 'lr': 1e-5},\n"
+                "]\n"
+                "optimizer = torch.optim.AdamW(param_groups, lr=3e-4)"
             ),
-            recommendations=[
-                "Apply gradient clipping to cap extreme outlier gradients.",
-                "Increase batch size or use gradient accumulation to reduce gradient noise.",
-                "Add LayerNorm to regularise the activation distribution entering affected layers.",
-                "Use a learning rate schedule with warm-up.",
-            ],
-            code_snippets={
-                "Gradient clipping": "torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)",
-                "LR warm-up (cosine)": (
-                    "scheduler = torch.optim.lr_scheduler.OneCycleLR(\n"
-                    "    optimizer, max_lr=1e-3, steps_per_epoch=len(loader), epochs=epochs)"
-                ),
-            },
-            affected_layers=affected,
-            confidence=0.82,
-        )]
-
-    def _rule_global_health(
-        self, report: GradientReport
-    ) -> List[ExpertFinding]:
-        """Emit a positive 'all healthy' info finding when no issues found."""
-        n_total = len(report.layer_stats)
-        n_healthy = sum(
-            1 for s in report.layer_stats
-            if s.diagnose() == GradientPathology.HEALTHY
-        )
-        if n_healthy < n_total:
-            return []
-        return [ExpertFinding(
-            rule_id="global_health_ok",
-            severity="info",
-            headline=f"✅ All {n_total} layers show healthy gradient flow",
-            detail=(
-                "No critical pathologies detected.  Gradient norms are within normal ranges "
-                "across all layers.  Continue monitoring — pathologies can appear after "
-                "further training or when switching to a new dataset."
-            ),
-            confidence=1.0,
+            confidence=0.78,
         )]
 
 
 # ---------------------------------------------------------------------------
-# Utility
+# Utility helpers
 # ---------------------------------------------------------------------------
 
 def _safe_norm(stats: Any) -> float:
@@ -534,3 +456,27 @@ def _safe_norm(stats: Any) -> float:
     if gn is not None and float(gn) > 0:
         return float(gn)
     return float(abs(getattr(stats, "mean", 0.0))) + 1e-12
+
+
+def inject_layer_norms(model: Any) -> Any:
+    """Utility: wrap each ``nn.Linear`` in a new ``nn.Sequential`` that adds
+    a ``nn.LayerNorm`` after it.  Returns the modified model.
+
+    This is the simplest possible LayerNorm injection and is meant as a
+    quick diagnostic tool, not a production recipe.  It works only for
+    flat ``nn.Sequential`` models.
+    """
+    try:
+        import torch.nn as nn
+    except ImportError:
+        return model
+
+    if not isinstance(model, nn.Sequential):
+        return model
+
+    new_layers = []
+    for m in model.children():
+        new_layers.append(m)
+        if isinstance(m, nn.Linear):
+            new_layers.append(nn.LayerNorm(m.out_features))
+    return nn.Sequential(*new_layers)
