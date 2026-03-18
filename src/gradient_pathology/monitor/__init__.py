@@ -1,23 +1,35 @@
 """Phase-4 real-time monitoring bridge.
 
-Connects :class:`~gradient_pathology.callbacks.GradientMonitor` to the
-Streamlit session state so that the live dashboard tab auto-refreshes
-as training progresses.
+This package connects a live PyTorch training loop to the Streamlit dashboard
+so that gradient statistics, loss curves, and Expert-System alerts update
+automatically as training progresses.
 
 Public surface::
 
-    from gradient_pathology.monitor import LiveGradientBridge, StreamlitCallback
+    from gradient_pathology.monitor import (
+        LiveGradientBridge,
+        StreamlitCallback,
+        HuggingFaceCallbackAdapter,
+    )
 
-    bridge   = LiveGradientBridge()
-    callback = StreamlitCallback(model, bridge=bridge)
+    # --- training side ---
+    bridge = LiveGradientBridge(max_steps=500)
+    callback = StreamlitCallback(model, bridge)
 
     for step, (x, y) in enumerate(loader):
-        loss = criterion(model(x), y)
-        loss.backward()
-        callback.on_batch_end(optimizer, loss=loss.item(), step=step)
+        loss = train_step(x, y)
+        callback.on_batch_end(step=step, loss=loss.item())
+
+    # --- dashboard side (inside render_realtime_tab) ---
+    snapshot = bridge.latest_snapshot()   # thread-safe read
 """
 
-from gradient_pathology.monitor.bridge import LiveGradientBridge
-from gradient_pathology.monitor.callback import StreamlitCallback
+from gradient_pathology.monitor.bridge import LiveGradientBridge, GradientSnapshot
+from gradient_pathology.monitor.callback import StreamlitCallback, HuggingFaceCallbackAdapter
 
-__all__ = ["LiveGradientBridge", "StreamlitCallback"]
+__all__ = [
+    "LiveGradientBridge",
+    "GradientSnapshot",
+    "StreamlitCallback",
+    "HuggingFaceCallbackAdapter",
+]

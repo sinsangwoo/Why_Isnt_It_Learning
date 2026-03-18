@@ -1,229 +1,289 @@
-"""LiveGradientBridge — thread-safe in-memory store shared between the
-training loop and the Streamlit refresh cycle.
+"""Thread-safe ring-buffer bridge: training loop → Streamlit session_state.
 
-Streamlit re-runs the entire script on each interaction, so state must
-live somewhere persistent.  We use two mechanisms in parallel:
-
-1. **Module-level singleton** (`_GLOBAL_BRIDGE`): works when training and
-   the dashboard share the *same Python process* (e.g. a notebook or a
-   ``multiprocessing.Process`` with shared memory).
-2. **``st.session_state`` injection** (optional): the bridge can push
-   snapshots directly into Streamlit's session state dict so that the UI
-   tab reflects the latest data without a page reload.
+Design goals
+------------
+* **Zero blocking** — the training loop must never wait for Streamlit.  All
+  writes are protected by a :class:`threading.Lock` and complete in O(1).
+* **Fixed memory** — a ring-buffer of at most *max_steps* snapshots keeps
+  the dashboard responsive regardless of training duration.
+* **Streamlit-compatible** — the bridge stores itself in
+  ``st.session_state`` under a user-chosen key so all reruns can read the
+  latest data without re-creating the object.
+* **Standalone** — the bridge has *no* Streamlit import so it can be used
+  in pure-Python training scripts and unit-tested without a browser.
 
 Data model
 ----------
-The bridge accumulates three ring buffers:
+Each :class:`GradientSnapshot` captures one training step::
 
-* ``step_history``    — list of step indices (capped to *max_steps*).
-* ``loss_history``    — list of scalar loss values.
-* ``grad_snapshots``  — list of dicts ``{layer_name: {mean, std, max}}``
-  (one entry per recorded step, same format as
-  :meth:`~gradient_pathology.callbacks.GradientMonitor.record_step`).
-
-It also stores:
-
-* ``current_report``  — the most recent
-  :class:`~gradient_pathology.core.GradientReport`, rebuilt every
-  *report_every_n_steps* steps.
-* ``alert_queue``     — list of unacknowledged alert strings.
-* ``is_training``     — bool flag, set ``True`` when a callback starts
-  and ``False`` when it signals training completion.
+    step          int       global step index
+    loss          float     scalar training loss (or NaN)
+    global_mean   float     mean |gradient| across all parameters
+    global_std    float     std  |gradient| across all parameters
+    layer_norms   dict      {param_name: mean_abs_grad}  (latest window avg)
+    alerts        list[str] pathology messages produced this step
+    timestamp     float     wall-clock time (time.monotonic)
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, List, Optional
+
+import numpy as np
+
+
+@dataclass
+class GradientSnapshot:
+    """Immutable record of gradient statistics at one training step."""
+
+    step:        int
+    loss:        float
+    global_mean: float
+    global_std:  float
+    layer_norms: Dict[str, float]  = field(default_factory=dict)
+    alerts:      List[str]         = field(default_factory=list)
+    timestamp:   float             = field(default_factory=time.monotonic)
 
 
 class LiveGradientBridge:
-    """Thread-safe shared memory between a training loop and Streamlit.
+    """Thread-safe ring-buffer that connects a training loop to Streamlit.
 
     Parameters
     ----------
     max_steps:
-        Maximum number of steps kept in the ring buffers.  Older entries
-        are dropped automatically to keep memory bounded.
-    report_every_n_steps:
-        How frequently (in steps) a fresh
-        :class:`~gradient_pathology.core.GradientReport` is built from
-        the accumulated history.
+        Maximum number of :class:`GradientSnapshot` objects retained.
+        Oldest entries are discarded automatically when the buffer is full.
+    alert_threshold:
+        Gradient mean below this value triggers a vanishing-gradient alert.
+    explode_threshold:
+        Gradient mean above this value triggers an exploding-gradient alert.
+
+    Thread safety
+    -------------
+    * :meth:`push` is called from the **training thread** (or main thread).
+    * :meth:`latest_snapshot`, :meth:`all_snapshots`, and :meth:`metrics_series`
+      are called from the **Streamlit rerun thread**.
+    * All public methods acquire ``_lock`` before reading or writing shared
+      state, guaranteeing consistency without busy-waiting.
 
     Examples
     --------
     ::
 
         bridge = LiveGradientBridge(max_steps=200)
-        # pass *bridge* to StreamlitCallback; Streamlit dashboard reads from it
+
+        # training loop
+        for step, (x, y) in enumerate(loader):
+            loss = model(x) ; loss.backward()
+            bridge.push(step=step, loss=loss.item(), model=model)
+
+        # Streamlit tab
+        snap = bridge.latest_snapshot()
+        if snap:
+            st.metric("Loss", f"{snap.loss:.4f}")
     """
 
     def __init__(
         self,
-        max_steps: int = 500,
-        report_every_n_steps: int = 20,
+        max_steps: int        = 500,
+        alert_threshold: float = 1e-7,
+        explode_threshold: float = 1e3,
     ) -> None:
-        self.max_steps             = max_steps
-        self.report_every_n_steps  = report_every_n_steps
-
-        self._lock: threading.Lock = threading.Lock()
-
-        self.step_history:   Deque[int]              = deque(maxlen=max_steps)
-        self.loss_history:   Deque[float]            = deque(maxlen=max_steps)
-        self.grad_snapshots: Deque[Dict[str, Any]]   = deque(maxlen=max_steps)
-
-        self.current_report: Optional[Any]           = None   # GradientReport
-        self.alert_queue:    List[str]               = []
-        self.is_training:    bool                    = False
-        self._total_steps:   int                     = 0
+        self._max_steps         = max_steps
+        self._alert_threshold   = alert_threshold
+        self._explode_threshold = explode_threshold
+        self._lock: threading.Lock       = threading.Lock()
+        self._buffer: Deque[GradientSnapshot] = deque(maxlen=max_steps)
+        self._pending_alerts: List[str]  = []
+        self._total_pushed: int          = 0
 
     # ------------------------------------------------------------------
-    # Write side (called from training thread)
+    # Write API (training thread)
     # ------------------------------------------------------------------
 
-    def push_step(
+    def push(
         self,
-        step: int,
-        loss: float,
-        grad_snapshot: Dict[str, Dict[str, float]],
-    ) -> None:
-        """Record one training step.
+        step:  int,
+        loss:  float,
+        model: Optional[Any] = None,   # nn.Module
+        layer_norms: Optional[Dict[str, float]] = None,
+        extra_alerts: Optional[List[str]] = None,
+    ) -> GradientSnapshot:
+        """Collect gradient stats from *model* and append a snapshot.
 
         Parameters
         ----------
         step:
-            Global step index.
+            Global training step index.
         loss:
-            Scalar loss value for this step.
-        grad_snapshot:
-            Dict mapping ``layer_name`` to ``{mean, std, max}`` as
-            produced by
-            :meth:`~gradient_pathology.callbacks.GradientMonitor.record_step`.
-        """
-        with self._lock:
-            self.step_history.append(step)
-            self.loss_history.append(float(loss))
-            self.grad_snapshots.append(grad_snapshot)
-            self._total_steps += 1
-            self.is_training = True
-
-    def push_report(self, report: Any) -> None:
-        """Store a freshly built :class:`~gradient_pathology.core.GradientReport`."""
-        with self._lock:
-            self.current_report = report
-
-    def push_alert(self, message: str) -> None:
-        """Enqueue an alert string for the UI to consume."""
-        with self._lock:
-            self.alert_queue.append(message)
-            # Cap to 50 unread alerts to avoid unbounded growth.
-            if len(self.alert_queue) > 50:
-                self.alert_queue.pop(0)
-
-    def signal_done(self) -> None:
-        """Signal that training has finished."""
-        with self._lock:
-            self.is_training = False
-
-    def clear(self) -> None:
-        """Reset all buffers (useful for a new training run)."""
-        with self._lock:
-            self.step_history.clear()
-            self.loss_history.clear()
-            self.grad_snapshots.clear()
-            self.current_report = None
-            self.alert_queue.clear()
-            self.is_training    = False
-            self._total_steps   = 0
-
-    # ------------------------------------------------------------------
-    # Read side (called from Streamlit render thread)
-    # ------------------------------------------------------------------
-
-    def snapshot(self) -> Dict[str, Any]:
-        """Return a consistent point-in-time snapshot of all bridge state.
-
-        The returned dict is safe to pass around; it holds copies of the
-        ring-buffer lists so subsequent mutations do not affect it.
+            Scalar training loss for this step.
+        model:
+            ``torch.nn.Module`` whose ``.grad`` tensors will be sampled.
+            If ``None``, *layer_norms* must be supplied.
+        layer_norms:
+            Pre-computed ``{param_name: mean_abs_grad}`` dict.  Used when
+            the caller has already computed norms (e.g. from
+            :class:`~gradient_pathology.callbacks.GradientMonitor`).
+        extra_alerts:
+            Additional alert strings to attach to this snapshot.
 
         Returns
         -------
-        dict with keys:
-            ``steps``         list[int]
-            ``losses``        list[float]
-            ``grad_snapshots``list[dict]
-            ``current_report`` GradientReport or None
-            ``alerts``        list[str]  (copy; alerts are NOT consumed)
-            ``is_training``   bool
-            ``total_steps``   int
+        GradientSnapshot
+            The snapshot that was just pushed.
         """
+        norms: Dict[str, float] = {}
+        alerts: List[str] = list(extra_alerts or [])
+
+        if model is not None:
+            try:
+                import torch  # local import — optional outside training
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        g = param.grad.detach().cpu()
+                        m = float(g.abs().mean().item())
+                        norms[name] = m
+                        if m < self._alert_threshold:
+                            alerts.append(
+                                f"Vanishing gradient: {name} (mean={m:.2e})"
+                            )
+                        elif m > self._explode_threshold:
+                            alerts.append(
+                                f"Exploding gradient: {name} (mean={m:.2e})"
+                            )
+            except Exception:  # pragma: no cover
+                pass
+        elif layer_norms is not None:
+            norms = dict(layer_norms)
+
+        if norms:
+            vals        = np.array(list(norms.values()), dtype=float)
+            global_mean = float(vals.mean())
+            global_std  = float(vals.std())
+        else:
+            global_mean = float("nan")
+            global_std  = float("nan")
+
+        snap = GradientSnapshot(
+            step=step,
+            loss=float(loss),
+            global_mean=global_mean,
+            global_std=global_std,
+            layer_norms=norms,
+            alerts=alerts,
+        )
+
         with self._lock:
-            return {
-                "steps":          list(self.step_history),
-                "losses":         list(self.loss_history),
-                "grad_snapshots": list(self.grad_snapshots),
-                "current_report": self.current_report,
-                "alerts":         list(self.alert_queue),
-                "is_training":    self.is_training,
-                "total_steps":    self._total_steps,
-            }
+            self._buffer.append(snap)
+            self._pending_alerts.extend(alerts)
+            self._total_pushed += 1
 
-    def pop_alerts(self) -> List[str]:
-        """Return and *clear* the alert queue."""
+        return snap
+
+    def clear(self) -> None:
+        """Reset the ring-buffer (call between training runs)."""
         with self._lock:
-            alerts = list(self.alert_queue)
-            self.alert_queue.clear()
-            return alerts
+            self._buffer.clear()
+            self._pending_alerts.clear()
+            self._total_pushed = 0
 
-    @property
-    def total_steps(self) -> int:
-        """Total steps recorded since last :meth:`clear`."""
-        return self._total_steps
+    # ------------------------------------------------------------------
+    # Read API (Streamlit rerun thread)
+    # ------------------------------------------------------------------
 
-    def inject_session_state(self, st_session: Dict[str, Any]) -> None:
-        """Push the current snapshot into a Streamlit ``session_state`` dict.
+    def latest_snapshot(self) -> Optional[GradientSnapshot]:
+        """Return the most recently pushed snapshot, or ``None``."""
+        with self._lock:
+            return self._buffer[-1] if self._buffer else None
 
-        Call this inside the training loop after each step if you want the
-        Streamlit UI to pick up changes without an explicit page reload.
+    def all_snapshots(self) -> List[GradientSnapshot]:
+        """Return a defensive copy of all retained snapshots."""
+        with self._lock:
+            return list(self._buffer)
+
+    def metrics_series(
+        self,
+        field: str = "loss",
+    ) -> tuple:
+        """Return ``(steps, values)`` arrays for a given snapshot field.
 
         Parameters
         ----------
-        st_session:
-            Typically ``streamlit.session_state``.
+        field:
+            One of: ``'loss'``, ``'global_mean'``, ``'global_std'``.
+
+        Returns
+        -------
+        tuple[list[int], list[float]]
         """
-        snap = self.snapshot()
-        st_session["live_steps"]          = snap["steps"]
-        st_session["live_losses"]          = snap["losses"]
-        st_session["live_grad_snapshots"]  = snap["grad_snapshots"]
-        st_session["live_report"]          = snap["current_report"]
-        st_session["live_alerts"]          = snap["alerts"]
-        st_session["live_is_training"]     = snap["is_training"]
-        st_session["live_total_steps"]     = snap["total_steps"]
+        snaps = self.all_snapshots()
+        steps  = [s.step         for s in snaps]
+        values = [getattr(s, field, float("nan")) for s in snaps]
+        return steps, values
 
+    def drain_alerts(self) -> List[str]:
+        """Return and clear all pending alert strings."""
+        with self._lock:
+            alerts = list(self._pending_alerts)
+            self._pending_alerts.clear()
+        return alerts
 
-# ---------------------------------------------------------------------------
-# Module-level singleton (convenience for same-process usage)
-# ---------------------------------------------------------------------------
+    @property
+    def total_pushed(self) -> int:
+        """Total snapshots ever pushed (not capped by ring-buffer size)."""
+        with self._lock:
+            return self._total_pushed
 
-_GLOBAL_BRIDGE: Optional[LiveGradientBridge] = None
+    @property
+    def is_empty(self) -> bool:
+        with self._lock:
+            return len(self._buffer) == 0
 
+    # ------------------------------------------------------------------
+    # Streamlit session_state helpers
+    # ------------------------------------------------------------------
 
-def get_global_bridge(
-    max_steps: int = 500,
-    report_every_n_steps: int = 20,
-) -> LiveGradientBridge:
-    """Return the process-global :class:`LiveGradientBridge`, creating it if needed."""
-    global _GLOBAL_BRIDGE
-    if _GLOBAL_BRIDGE is None:
-        _GLOBAL_BRIDGE = LiveGradientBridge(
-            max_steps=max_steps,
-            report_every_n_steps=report_every_n_steps,
+    @classmethod
+    def from_session_state(
+        cls,
+        key: str = "_gp_bridge",
+        **kwargs: Any,
+    ) -> "LiveGradientBridge":
+        """Return the bridge stored in ``st.session_state[key]``, creating
+        one if it doesn’t exist yet.
+
+        This is the recommended way to obtain a bridge inside a Streamlit
+        app: call this once at the top of the page and pass the returned
+        object to both the training callback and the dashboard tab.
+
+        Parameters
+        ----------
+        key:
+            ``st.session_state`` key to use for persistence.
+        **kwargs:
+            Passed to the constructor when a new bridge is created.
+
+        Returns
+        -------
+        LiveGradientBridge
+        """
+        try:
+            import streamlit as st  # type: ignore[import]
+            if key not in st.session_state:
+                st.session_state[key] = cls(**kwargs)
+            return st.session_state[key]  # type: ignore[return-value]
+        except ImportError:
+            return cls(**kwargs)
+
+    def __repr__(self) -> str:
+        with self._lock:
+            n = len(self._buffer)
+        return (
+            f"LiveGradientBridge("
+            f"buffered={n}/{self._max_steps}, "
+            f"total_pushed={self._total_pushed})"
         )
-    return _GLOBAL_BRIDGE
-
-
-def reset_global_bridge() -> None:
-    """Destroy the global bridge (useful in tests)."""
-    global _GLOBAL_BRIDGE
-    _GLOBAL_BRIDGE = None
