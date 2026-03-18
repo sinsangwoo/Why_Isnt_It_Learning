@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from gradient_pathology.core import GradientReport, LayerGradientStats
+from gradient_pathology.core import GradientReport, LayerGradientStats, LayerGroup
+from gradient_pathology.pipeline.classifier import TransformerLayerClassifier
 
 
 class GradientAnalyzer:
@@ -51,6 +52,13 @@ class GradientAnalyzer:
         self.model = model
         self.device = device
         self.model.to(self.device)
+
+        # Build a mapping: parameter_name -> (layer_type, LayerGroup)
+        # This is populated once at init time so it is O(modules) not O(steps).
+        self._classifier = TransformerLayerClassifier(model)
+        self._param_meta: Dict[str, Tuple[str, LayerGroup]] = (
+            self._classifier.build_param_metadata()
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,6 +166,15 @@ class GradientAnalyzer:
             grads_array = np.concatenate([g.flatten() for g in grads])
             all_gradients.append(grads_array)
 
+            # --- Phase-1: resolve layer_type and group from pre-built map ---
+            layer_type, group = self._param_meta.get(
+                name, ("unknown", LayerGroup.OTHER)
+            )
+            # grad_norm: L2 norm of the per-step mean gradient
+            per_step_means = np.array([g.mean() for g in grads])
+            grad_norm = float(np.linalg.norm(per_step_means))
+            # ----------------------------------------------------------------
+
             stats = LayerGradientStats(
                 layer_name=name,
                 layer_index=idx,
@@ -168,6 +185,11 @@ class GradientAnalyzer:
                 median=float(np.median(grads_array)),
                 num_zeros=int(np.sum(grads_array == 0)),
                 total_params=len(grads_array),
+                # Phase-1 fields
+                layer_type=layer_type,
+                depth=idx,
+                group=group,
+                grad_norm=grad_norm,
             )
             layer_stats.append(stats)
 
@@ -195,13 +217,11 @@ class GradientAnalyzer:
         loss_fn: nn.Module,
     ) -> GradientReport:
         """Diagnose using a real DataLoader."""
-        # Wrap in an infinite iterator so we can use next() uniformly
         def _cycle(loader: object) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
             while True:
                 for batch in loader:  # type: ignore[attr-defined]
                     yield batch
 
-        # Determine num_steps from dataset length when possible
         num_steps: int
         try:
             num_steps = len(dataloader)  # type: ignore[arg-type]

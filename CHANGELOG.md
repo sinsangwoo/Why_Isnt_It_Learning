@@ -2,58 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+## [Unreleased] — feature/phase1-data-pipeline
 
-## [Unreleased]
+### Added (Phase 1 — Data Pipeline Foundation)
 
-### Changed — **Breaking** (Phase 0 refactor)
+#### 1-A: Layer Metadata Enrichment (`core.py`, `analyzer.py`)
+- Added `LayerGroup` enum with six semantic groups: `ATTENTION`, `FFN`, `LAYER_NORM`, `EMBEDDING`, `HEAD`, `OTHER`.
+- Extended `LayerGradientStats` with four new fields:
+  - `layer_type` — PyTorch module class name (e.g. `"Linear"`, `"LayerNorm"`).
+  - `depth` — 0-based index of the layer in the parameter list.
+  - `group` — inferred `LayerGroup` from `TransformerLayerClassifier`.
+  - `grad_norm` — L2 norm of per-step mean gradient; primary Heatmap intensity scalar.
+- Updated `GradientReport.summary()` to include `group`, `layer_type`, and `grad_norm` in per-layer output.
+- Updated `GradientAnalyzer` to instantiate `TransformerLayerClassifier` at init time and inject metadata into every `LayerGradientStats`.
 
-- `GradientAnalyzer.diagnose()` now accepts an optional `dataloader` parameter.
-  When provided, gradients are computed on **real training data** rather than
-  synthetic random tensors.  This is the recommended usage going forward.
-- `GradientReport` gains a `data_source` field (`"dataloader"` | `"synthetic"`)
-  so callers can tell at a glance which mode was used.
-- The summary string now includes a visible warning when `data_source == "synthetic"`.
+#### 1-B: Snapshot Storage (`pipeline/snapshot.py`)
+- New class `GradientSnapshotStore`:
+  - `record_from_stats(step, layer_stats)` — primary entry point from `GradientReport`.
+  - `record_from_monitor(step, monitor_history_entry)` — lightweight path from `GradientMonitor`.
+  - `flush()` — writes buffered rows to disk; auto-flushed when buffer reaches `buffer_size`.
+  - `load()` — returns a `pandas.DataFrame` (requires `[storage]` extra).
+  - `load_json_raw()` — zero-dependency JSON loader returning `list[dict]`.
+  - Supports `json` (default) and `parquet` output formats.
+  - Schema: `step`, `layer_name`, `layer_type`, `depth`, `group`, `grad_norm`, `mean`, `std`, `min`, `max`, `zero_ratio`, `pathology`.
 
-### Backward Compatibility
+#### 1-C: Transformer Layer Classifier (`pipeline/classifier.py`)
+- New class `TransformerLayerClassifier`:
+  - `build_param_metadata()` — returns `{param_name: (layer_type, LayerGroup)}` for every parameter.
+  - `classify_param(param_name)` — classify a single parameter name.
+  - `group_summary()` — group-to-param-list mapping for quick sanity-checking.
+- Name-based heuristic covers GPT-2, LLaMA, Mistral, BERT-style, and hand-rolled Transformer variants.
+- `pipeline/__init__.py` exports `TransformerLayerClassifier` and `GradientSnapshotStore`.
 
-Existing code that calls `diagnose(num_steps=..., input_shape=...)` continues to
-work unchanged.  The new `dataloader` parameter is optional and defaults to
-`None`, which triggers the legacy synthetic path.
-
-### Migration
-
-```python
-# Before (still works, but limited diagnostic value)
-report = analyzer.diagnose(num_steps=100, input_shape=(64,))
-
-# After (recommended — use your actual training loader)
-report = analyzer.diagnose(dataloader=train_loader, loss_fn=criterion)
-```
-
----
-
-## [0.3.0] — 2026-02-11
-
-### Added
-- Phase 5.2: GPU cost optimisation (CostCalculator, TrainingOptimizer).
-- Complete README overhaul with professional structure.
-
-## [0.2.0] — 2026-02-09
-
-### Added
-- Phase 5.1: LLM-specific features (TransformerDiagnostics, FSDPAnalyzer,
-  QuantizationAnalyzer).
-- Phase 4.2: Ecosystem integrations (HuggingFace, PyTorch Lightning, Ray Tune).
-
-## [0.1.0] — 2026-02-05
-
-### Added
-- Phase 4.1: Sphinx documentation, tutorials, case studies.
-- Phase 3.4: Docker, MLflow experiment tracking, benchmark suite.
-- Phase 3.3: Rule-based ExpertSystem for automated diagnosis.
-- Phase 3.2: EffectiveRankAnalyzer, LayerLRFinder, GradientFlowGraph.
-- Phase 3.1: AttentionMonitor, TransformerHooks.
-- Phase 3.0: HessianAnalyzer, LRFinder, TransformerDiagnostics.
-- Phase 2: Real-time monitoring callbacks.
-- Phase 1: Core gradient analysis engine and report structures.
+#### Infrastructure
+- `pyproject.toml`: added `[storage]` optional extra (`pandas>=1.5.0`, `pyarrow>=12.0.0`); bumped version to `0.5.0`.
+- `__init__.py`: exports `LayerGroup`, `TransformerLayerClassifier`, `GradientSnapshotStore`.
+- `tests/test_phase1_pipeline.py`: 25 new tests covering all three sub-tasks.
