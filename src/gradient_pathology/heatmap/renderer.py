@@ -26,7 +26,6 @@ import numpy as np
 
 from gradient_pathology.core import GradientPathology, GradientReport, LayerGroup
 from gradient_pathology.heatmap.colormap import (
-    COLOR_SCHEME_DEFAULT,
     GROUP_BORDER_COLORS,
     VANISHING_WARN_COLOR,
     EXPLODING_WARN_COLOR,
@@ -59,9 +58,6 @@ try:
     _MPL_AVAILABLE = True
 except ImportError:
     _MPL_AVAILABLE = False
-
-# Sentinel used in colormap module init
-COLOR_SCHEME_DEFAULT = ColorScheme.VIRIDIS
 
 # ---------------------------------------------------------------------------
 # Thresholds
@@ -342,7 +338,6 @@ class GradientHeatmapRenderer:
 
         for i, node in enumerate(layout.nodes):
             s = stats_map[node.layer_index]
-            norm = self._all_norms[i]
             pathology = s.diagnose()
 
             if pathology == GradientPathology.VANISHING:
@@ -488,7 +483,7 @@ class GradientHeatmapRenderer:
                 xref="x",
                 yref="y",
                 text=(
-                    f'<span style="color:{color};">⬤</span> {g.value}'
+                    f'<span style="color:{color};">&#11044;</span> {g.value}'
                 ),
                 showarrow=False,
                 font=dict(size=11, color="#CCCCCC"),
