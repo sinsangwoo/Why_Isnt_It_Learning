@@ -2,73 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] — feature/phase3-sankey-diagram
+## [Unreleased] — feature/phase4-realtime-expert
 
-### Added (Phase 3 — Sankey Diagram)
+### Added (Phase 4 — Real-time Monitoring + Expert System)
 
-#### Data transformer (`sankey/flow.py`)
-- `FlowStrategy` enum: `LOG` (default), `NORMALISED`, `RELATIVE`, `SQRT`, `RAW` — five strategies for mapping `grad_norm` to link width.
-- `FlowZone` enum: `HEALTHY`, `VANISHING`, `BOTTLENECK`, `EXPLODING`, `DEAD` — semantic health classification per link.
-- `SankeyLink` dataclass: `source_idx`, `target_idx`, `value`, `raw_source_norm`, `raw_target_norm`, `zone`, `loss_fraction`.
-- `SankeyFlow` dataclass: full Sankey-ready data (node labels, groups, pathologies, links) with convenience properties `vanishing_links`, `bottleneck_links`, `max_loss_fraction`.
-- `SankeyFlowBuilder`: transforms a `GradientReport` into a `SankeyFlow`:
-  - Log-space min-max normalisation (default) for link-width scaling.
-  - Vanishing/Exploding/Bottleneck zone classification with configurable thresholds.
-  - `_merge_by_module()`: merges weight+bias pairs into single nodes (L2-combined `grad_norm`); dramatically reduces node count for large Transformers.
-  - Nodes ordered in **reverse depth** (output→input = left→right backprop direction).
+#### Real-time monitoring bridge (`monitor/`)
+- `LiveGradientBridge` — thread-safe in-memory ring-buffer store:
+  - `push_step(step, loss, grad_snapshot)` — called from training loop.
+  - `push_report(report)` — store latest `GradientReport`.
+  - `push_alert(message)` — enqueue a pathology alert string.
+  - `pop_alerts()` — consume + clear alert queue.
+  - `snapshot()` — consistent point-in-time read (returns copies).
+  - `inject_session_state(st_session)` — populate Streamlit session_state.
+  - `signal_done()` — mark training as complete.
+  - `clear()` — reset all buffers.
+  - `max_steps` ring buffer (default 500) — bounded memory.
+  - `get_global_bridge()` / `reset_global_bridge()` — module-level singleton.
+- `StreamlitCallback` — connects the training loop to `LiveGradientBridge`:
+  - `on_batch_end(optimizer, loss, step)` — collect gradients, push to bridge.
+  - `on_train_end()` — final report + `signal_done()`.
+  - `_check_alerts()` — vanishing/exploding alerts after every step.
+  - `_rebuild_report()` — full `GradientReport` every `report_every_n_steps`.
+  - `as_hf_callback(**kwargs)` — HuggingFace `TrainerCallback` adapter.
 
-#### Renderer (`sankey/renderer.py`)
-- `GradientSankeyRenderer`: builds a Plotly `go.Sankey` figure:
-  - Link width = `grad_norm`-derived value; **narrow links = information loss zones**.
-  - Link colour per `FlowZone`: green (healthy), red (vanishing), amber (bottleneck), orange (exploding).
-  - Node colour per `LayerGroup` (matching Phase-2 palette).
-  - Rich hover tooltips on nodes (name, type, group, grad_norm, pathology) and links (zone, loss %, src/dst norms).
-  - Zone colour legend annotations at figure top.
-  - Dark theme (`#0F1117`) consistent with Phase-2 Heatmap.
-  - `.build()`, `.show()`, `.save_html()` public API.
-  - `ZONE_LINK_COLORS` and `GROUP_NODE_COLORS` colour tables.
+#### ExpertEngine (`expert/engine.py`)
+- `ExpertFinding` dataclass: `rule_id`, `severity`, `headline`, `detail`, `recommendations`, `code_snippets`, `affected_layers`, `confidence`.
+- `ExpertEngine` — 7 diagnostic rules:
+  - `vanishing_layers` — layers below `vanishing_threshold`.
+  - `exploding_layers` — layers above `exploding_threshold`.
+  - `dead_neurons` — layers with > 90% zero-gradient ratio.
+  - `structural_bottleneck` — sharp relative grad-norm drops between consecutive layers.
+  - `attention_collapse` — vanishing specifically in Attention group layers.
+  - `norm_layer_overload` — LayerNorm carrying 10× above-average gradients.
+  - `gradient_imbalance` — high CV (std / |mean| > threshold) instability.
+  - `global_health_ok` — positive info finding when all layers are healthy.
+- `analyze(report)` — run all rules, return findings sorted by severity.
+- `analyze_layer(layer_name, report)` — filter findings for a single layer.
+- `top_finding(report)` — return most severe finding.
+- `expert/__init__.py`: exports `ExpertSystem`, `ExpertEngine`, `ExpertFinding`.
 
-#### Layer detail panel (`sankey/detail_panel.py`)
-- `LayerDetailPanel`: per-layer deep-dive diagnostics:
-  - `build_dict(layer_name)` — returns plain Python dict with full stats, pathology, peer/global rank, headline, and actionable recommendations.
-  - `build_plotly(layer_name)` — 2×2 Plotly subplot figure:
-    - *Top-left*: health radar chart (5 axes: grad_norm, zero_ratio, mean, std, depth).
-    - *Top-right*: bar comparing this layer vs. global mean grad_norm.
-    - *Bottom-left*: peer-group bar showing this layer's rank within its `LayerGroup`.
-    - *Bottom-right*: diagnosis table (headline + itemised recommendations).
-  - `_PATHOLOGY_ADVICE` dict: 5 pathologies × (headline, recommendations) with concrete fix suggestions.
-
-#### Streamlit tab (`sankey/dashboard_tab.py`)
-- `render_sankey_tab(report)` — full Streamlit tab with:
-  - Flow strategy selector, vanishing threshold slider, bottleneck ratio slider, merge toggle, group-colour toggle.
-  - Full-width Sankey figure.
-  - Info-loss summary metrics (vanishing links, bottleneck links, max info loss %).
-  - Sorted critical-zone table (top 8 worst links).
-  - Layer deep-dive section: selectbox pre-seeded with worst layer → 2×2 `LayerDetailPanel` figure.
-
-#### `gradient_flow_graph.py` shim
-- `GradientFlowGraph.plot_sankey()` — one-liner entry point; accepts all major renderer parameters as strings.
-
-#### `dashboard.py` upgrade
-- Three-tab layout: **🌊 Sankey Flow** | 🌡️ Architecture Heatmap | 📊 Classic Report.
+#### Dashboard components (`dashboard/`)
+- `expert_panel.py`:
+  - `render_expert_banner(report)` — compact top-of-dashboard notification strip.
+  - `render_expert_panel(report)` — full expandable expert diagnostics panel.
+  - `render_layer_expert_panel(layer_name, report)` — popup panel for a specific layer.
+  - `render_realtime_alerts(alerts)` — live alert feed from `LiveGradientBridge`.
+- `realtime_tab.py`:
+  - `render_realtime_tab(bridge, static_report)` — live loss curve + grad-norm trend chart (Plotly with Matplotlib fallback), status bar, alert feed, auto-refresh, setup guide.
+- `layout.py` — master 4-tab orchestrator:
+  - Tabs: 📊 Live Monitor | 🌊 Sankey Flow | 🌡️ Heatmap | 📝 Classic Report.
+  - Expert banner above all tabs.
+  - Detection threshold sliders in sidebar.
+  - Live bridge status in sidebar.
+  - `_render_metrics_strip`, `_render_sidebar`, `_render_classic_tab`.
+- `dashboard/__init__.py` — exports `run_dashboard`.
+- `dashboard.py` (root) — thin backward-compat shim over `dashboard.layout`.
 
 #### Infrastructure
-- `pyproject.toml`: version bumped to `0.7.0`.
-- `__init__.py`: exports `GradientSankeyRenderer`.
-- `tests/test_phase3_sankey.py`: 35 tests across all sub-modules.
+- `pyproject.toml`: version bumped to `0.8.0`.
+- `__init__.py`: exports `LiveGradientBridge`, `StreamlitCallback`, `ExpertEngine`, `ExpertFinding`.
+- `tests/test_phase4_realtime_expert.py`: 30+ tests covering bridge, callback, expert engine rules, and full integration pipeline.
 
 ---
+
+## [Unreleased] — feature/phase3-sankey-diagram
+### Added (Phase 3 — Sankey Diagram)
+- `SankeyFlowBuilder`, `GradientSankeyRenderer`, `LayerDetailPanel`, `render_sankey_tab`.
 
 ## [Unreleased] — feature/phase2-heatmap-visualization
-
 ### Added (Phase 2 — Heatmap Visualisation)
-- `GradientHeatmapRenderer` with Plotly interactive architecture graph.
-- Colormap utilities, Layout engine, Streamlit tab.
-
----
+- `GradientHeatmapRenderer`, colormap, layout, dashboard tab.
 
 ## [Unreleased] — feature/phase1-data-pipeline
-
 ### Added (Phase 1 — Data Pipeline Foundation)
-- `LayerGroup` enum, `grad_norm`/`layer_type`/`depth`/`group` metadata.
-- `GradientSnapshotStore`, `TransformerLayerClassifier`.
+- `LayerGroup`, `grad_norm`/`layer_type`/`depth`, `GradientSnapshotStore`, `TransformerLayerClassifier`.

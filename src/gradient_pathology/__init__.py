@@ -13,8 +13,10 @@ from gradient_pathology.pipeline import (
 )
 from gradient_pathology.heatmap import GradientHeatmapRenderer
 from gradient_pathology.sankey import GradientSankeyRenderer
+from gradient_pathology.monitor import LiveGradientBridge, StreamlitCallback
+from gradient_pathology.expert import ExpertSystem, ExpertEngine, ExpertFinding
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "GradientAnalyzer",
     "GradientReport",
@@ -29,4 +31,10 @@ __all__ = [
     "GradientHeatmapRenderer",
     # Phase-3 sankey
     "GradientSankeyRenderer",
+    # Phase-4 real-time + expert
+    "LiveGradientBridge",
+    "StreamlitCallback",
+    "ExpertSystem",
+    "ExpertEngine",
+    "ExpertFinding",
 ]
