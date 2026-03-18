@@ -1,11 +1,7 @@
-"""Phase-4 dashboard package.
+"""Phase-4 dashboard package — 4-tab Streamlit orchestrator.
 
-Orchestrates all tabs and components into the final unified dashboard.
-
-Public surface::
-
-    from gradient_pathology.dashboard import run_dashboard
-    run_dashboard()   # launches Streamlit
+All rendering logic lives in sub-modules; ``dashboard.py`` at the package
+root is a thin backward-compatible shim that calls :func:`run_dashboard`.
 """
 
 from gradient_pathology.dashboard.layout import run_dashboard

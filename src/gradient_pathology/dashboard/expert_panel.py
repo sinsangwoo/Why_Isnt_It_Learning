@@ -1,16 +1,19 @@
-"""Phase-4: ExpertSystem popup panel for the Streamlit dashboard.
+"""Phase-4 Expert System panel for the Streamlit dashboard.
 
-This module renders the :class:`~gradient_pathology.expert.engine.ExpertEngine`
-diagnostics as an interactive Streamlit component:
+Three rendering contexts are supported:
 
-* A **notification banner** at the top of the dashboard listing critical
-  findings with one-click expand.
-* An **Expert Diagnosis** panel (full-width expander) that shows every
-  finding in detail: severity badge, headline, Markdown explanation,
-  itemised recommendations, and copy-pasteable code snippets.
-* A **Layer-focused panel** (``render_layer_expert_panel``) that shows
-  only findings relevant to a specific layer — used from the Heatmap and
-  Sankey tabs when a user clicks/selects a layer node.
+1. **Notification banner** (:func:`render_expert_banner`) — a compact
+   coloured banner shown at the top of *every* tab whenever critical
+   findings exist.  Includes a one-liner summary and a button to expand.
+
+2. **Full popup** (:func:`render_expert_popup`) — a ``st.expander`` block
+   that shows all :class:`~gradient_pathology.expert.engine.ExpertFinding`
+   objects with their detail text, affected layer list, and ready-to-paste
+   code hints.
+
+3. **Layer click panel** (:func:`render_layer_expert_panel`) — filters
+   findings to only those that mention the selected layer, used inside
+   the Sankey tab’s deep-dive section.
 """
 
 from __future__ import annotations
@@ -22,15 +25,12 @@ from gradient_pathology.expert.engine import ExpertEngine, ExpertFinding
 
 try:
     import streamlit as st
-    _ST_AVAILABLE = True
+    _ST = True
 except ImportError:
-    _ST_AVAILABLE = False
+    _ST = False
 
 
-# ---------------------------------------------------------------------------
-# Module-level engine instance (shared, stateless)
-# ---------------------------------------------------------------------------
-
+# Module-level singleton — recreated on each Streamlit rerun (cheap).
 _ENGINE = ExpertEngine()
 
 
@@ -38,96 +38,107 @@ _ENGINE = ExpertEngine()
 # Public helpers
 # ---------------------------------------------------------------------------
 
+def get_findings(report: GradientReport) -> List[ExpertFinding]:
+    """Run the ExpertEngine and return sorted findings."""
+    return _ENGINE.analyse(report)
+
+
 def render_expert_banner(
     report: GradientReport,
     key_prefix: str = "expert_banner",
-    vanishing_threshold: float = 1e-7,
-    exploding_threshold: float = 1e3,
 ) -> None:
-    """Render a compact notification strip at the top of the dashboard.
+    """Render a compact status banner at the top of a tab.
 
-    Shows critical finding headlines as ``st.error`` banners and warning
-    headlines as ``st.warning`` banners.  Clicking the expander reveals
-    the full expert panel.
+    * **Green** when no findings.
+    * **Orange** when only warnings / info.
+    * **Red** when at least one critical finding.
+
+    A **🔍 Details** expander is appended if any findings exist.
+    """
+    if not _ST:
+        return
+    findings = get_findings(report)
+    if not findings:
+        st.success("✅ Expert System: all layers healthy — no issues detected.")
+        return
+
+    crit = [f for f in findings if f.severity == "critical"]
+    warn = [f for f in findings if f.severity == "warning"]
+    info = [f for f in findings if f.severity == "info"]
+
+    summary = _ENGINE.quick_summary(report)
+    if crit:
+        st.error(summary)
+    elif warn:
+        st.warning(summary)
+    else:
+        st.info(summary)
+
+    with st.expander("🔍 Expert System details", expanded=bool(crit)):
+        render_expert_popup(
+            findings=findings,
+            key_prefix=key_prefix,
+            show_header=False,
+        )
+
+
+def render_expert_popup(
+    report: Optional[GradientReport] = None,
+    findings: Optional[List[ExpertFinding]] = None,
+    key_prefix: str = "expert_popup",
+    show_header: bool = True,
+) -> None:
+    """Render the full Expert System findings panel.
+
+    Either *report* or *findings* must be supplied.
 
     Parameters
     ----------
     report:
-        The current :class:`~gradient_pathology.core.GradientReport`.
+        If supplied, findings are computed from this report.
+    findings:
+        Pre-computed findings list (takes precedence over *report*).
     key_prefix:
-        Streamlit widget key prefix.
-    vanishing_threshold / exploding_threshold:
-        Forwarded to :class:`~gradient_pathology.expert.engine.ExpertEngine`.
+        Streamlit widget key prefix for uniqueness.
+    show_header:
+        Whether to render the ``## Expert System Diagnostics`` heading.
     """
-    if not _ST_AVAILABLE:
+    if not _ST:
         return
 
-    engine   = ExpertEngine(
-        vanishing_threshold=vanishing_threshold,
-        exploding_threshold=exploding_threshold,
-    )
-    findings = engine.analyze(report)
+    if findings is None:
+        if report is None:
+            st.info("No report supplied.")
+            return
+        findings = get_findings(report)
 
     if not findings:
+        st.success("✅ No issues detected by the Expert System.")
         return
 
-    critical = [f for f in findings if f.severity == "critical"]
-    warnings = [f for f in findings if f.severity == "warning"]
+    if show_header:
+        st.subheader("🧠 Expert System Diagnostics")
 
-    # Compact banners
-    for f in critical:
-        st.error(f"{f.severity_emoji} **{f.headline}** — {len(f.affected_layers)} layer(s) affected")
-    for f in warnings[:3]:  # cap at 3 to avoid clutter
-        st.warning(f"{f.severity_emoji} {f.headline}")
+    for severity in ("critical", "warning", "info"):
+        group = [f for f in findings if f.severity == severity]
+        if not group:
+            continue
 
+        label_map = {
+            "critical": ("🚨 Critical issues", True),
+            "warning":  ("⚠️ Warnings",         False),
+            "info":     ("ℹ️ Suggestions",      False),
+        }
+        section_label, default_open = label_map[severity]
 
-def render_expert_panel(
-    report: GradientReport,
-    key_prefix: str = "expert",
-    vanishing_threshold: float = 1e-7,
-    exploding_threshold: float = 1e3,
-    expanded: bool = False,
-) -> None:
-    """Render the full expert diagnostics in an expandable panel.
-
-    Parameters
-    ----------
-    report:
-        The current :class:`~gradient_pathology.core.GradientReport`.
-    key_prefix:
-        Streamlit widget key prefix.
-    vanishing_threshold / exploding_threshold:
-        Forwarded to the engine.
-    expanded:
-        Whether the panel starts expanded.  Defaults to ``False``
-        (collapsed) to avoid overwhelming first-time users.
-    """
-    if not _ST_AVAILABLE:
-        return
-
-    engine   = ExpertEngine(
-        vanishing_threshold=vanishing_threshold,
-        exploding_threshold=exploding_threshold,
-    )
-    findings = engine.analyze(report)
-    critical = [f for f in findings if f.severity == "critical"]
-    n_issues = sum(1 for f in findings if f.severity != "info")
-
-    label = (
-        f"🧠 Expert Diagnosis — {n_issues} issue(s) found"
-        if n_issues > 0
-        else "🧠 Expert Diagnosis — all healthy"
-    )
-
-    with st.expander(label, expanded=expanded or len(critical) > 0):
-        if not findings:
-            st.success("✅ No issues detected by the expert engine.")
-            return
-
-        for i, f in enumerate(findings):
-            _render_finding_card(f, key_prefix=f"{key_prefix}_f{i}")
-            if i < len(findings) - 1:
-                st.markdown("---")
+        with st.expander(f"{section_label} ({len(group)})", expanded=default_open):
+            for i, finding in enumerate(group):
+                _render_single_finding(
+                    finding,
+                    key=f"{key_prefix}_{severity}_{i}",
+                )
+            if severity != "info":
+                st.divider()
 
 
 def render_layer_expert_panel(
@@ -135,107 +146,65 @@ def render_layer_expert_panel(
     report: GradientReport,
     key_prefix: str = "layer_expert",
 ) -> None:
-    """Render findings relevant to a specific *layer_name*.
+    """Render Expert findings that mention *layer_name*.
 
-    This is the **popup panel** triggered when a user clicks/selects a
-    node in the Heatmap or Sankey diagrams.
-
-    Parameters
-    ----------
-    layer_name:
-        Fully-qualified parameter name (must match
-        :attr:`~gradient_pathology.core.LayerGradientStats.layer_name`).
-    report:
-        Full gradient report.
-    key_prefix:
-        Streamlit widget key prefix.
+    Used in the Sankey tab’s layer deep-dive section.  Shows findings
+    filtered to findings whose ``.layers`` list contains *layer_name*.
+    Falls back to showing all findings when none mention the layer.
     """
-    if not _ST_AVAILABLE:
+    if not _ST:
         return
 
-    engine   = ExpertEngine()
-    findings = engine.analyze_layer(layer_name, report)
+    findings = get_findings(report)
+    relevant = [
+        f for f in findings
+        if any(layer_name in ln for ln in f.layers)
+    ]
 
-    if not findings:
-        st.info(f"✅ No expert findings for `{layer_name}`.")
+    if not relevant:
+        # Show global findings if nothing is layer-specific
+        relevant = findings
+
+    if not relevant:
+        st.success("✅ No Expert System issues for this layer.")
         return
 
-    st.markdown(f"**Expert findings for** `{layer_name}`")
-    for i, f in enumerate(findings):
-        _render_finding_card(f, key_prefix=f"{key_prefix}_lf{i}", compact=True)
-
-
-def render_realtime_alerts(
-    alerts: List[str],
-    key_prefix: str = "rt_alerts",
-) -> None:
-    """Render real-time alert messages from the :class:`~gradient_pathology.monitor.bridge.LiveGradientBridge`.
-
-    Parameters
-    ----------
-    alerts:
-        List of alert strings popped from ``bridge.pop_alerts()``.
-    key_prefix:
-        Streamlit widget key prefix.
-    """
-    if not _ST_AVAILABLE or not alerts:
-        return
-
-    with st.expander(f"🔔 {len(alerts)} real-time alert(s)", expanded=True):
-        for alert in alerts[-10:]:  # show last 10
-            if "VANISHING" in alert or "EXPLODING" in alert:
-                st.error(alert)
-            else:
-                st.warning(alert)
+    st.markdown(f"**Expert diagnosis for** `{layer_name.split('.')[-1]}`")
+    for i, finding in enumerate(relevant[:5]):  # cap at 5 to avoid clutter
+        _render_single_finding(finding, key=f"{key_prefix}_{i}")
 
 
 # ---------------------------------------------------------------------------
-# Internal render helpers
+# Private helpers
 # ---------------------------------------------------------------------------
 
-def _render_finding_card(
+def _render_single_finding(
     finding: ExpertFinding,
-    key_prefix: str = "",
-    compact: bool = False,
+    key: str = "finding",
 ) -> None:
-    """Render one :class:`ExpertFinding` as a styled Streamlit card."""
-    # Header row
-    severity_fn = {
-        "critical": st.error,
-        "warning":  st.warning,
-        "info":     st.info,
-    }.get(finding.severity, st.info)
+    """Render one :class:`ExpertFinding` as a styled card."""
+    # Header line
+    st.markdown(
+        f"**{finding.emoji} {finding.title}**  "
+        f"&nbsp;&nbsp;<sub>confidence: {finding.confidence:.0%}</sub>",
+        unsafe_allow_html=True,
+    )
 
-    severity_fn(f"{finding.severity_emoji} **{finding.headline}**  "
-                f"*(confidence {finding.confidence:.0%})*")
-
-    if compact:
-        # Just the top recommendation in compact mode
-        if finding.recommendations:
-            st.caption(f"Suggestion: {finding.recommendations[0]}")
-        return
-
-    # Detail block
+    # Detail markdown
     st.markdown(finding.detail)
 
-    # Recommendations
-    if finding.recommendations:
-        st.markdown("**Recommendations:**")
-        for rec in finding.recommendations:
-            st.markdown(f"- {rec}")
-
-    # Code snippets
-    if finding.code_snippets:
-        st.markdown("**Code fixes:**")
-        for label, code in finding.code_snippets.items():
-            st.markdown(f"*{label}*")
-            st.code(code, language="python")
-
     # Affected layers
-    if finding.affected_layers:
+    if finding.layers:
         with st.expander(
-            f"Affected layers ({len(finding.affected_layers)})",
-            expanded=False,
+            f"Affected layers ({len(finding.layers)})",
+            expanded=len(finding.layers) <= 3,
         ):
-            for ln in finding.affected_layers:
-                st.text(ln)
+            for ln in finding.layers:
+                st.code(ln, language="text")
+
+    # Code hint
+    if finding.code_hint:
+        with st.expander("💡 Fix — copy & paste", expanded=False):
+            st.code(finding.code_hint, language="python")
+
+    st.divider()

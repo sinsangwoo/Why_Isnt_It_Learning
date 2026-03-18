@@ -1,329 +1,306 @@
-"""Phase-4: Real-time monitoring tab for the Streamlit dashboard.
+"""Phase-4 Streamlit tab: Live Monitor.
 
-This tab renders a **live training dashboard** that updates as the
-training loop pushes data to a :class:`~gradient_pathology.monitor.bridge.LiveGradientBridge`:
+Renders real-time gradient-norm and loss curves that update automatically
+as the training loop pushes data into the shared :class:`LiveGradientBridge`.
 
-* Loss curve (rolling window).
-* Per-layer gradient norm trend chart (top N most volatile layers).
-* Alert feed from the bridge.
-* Health score sparkline.
-* Auto-refresh control (uses ``st.rerun`` on a timer).
+Layout
+------
+1. **Status row** — last step, last loss, global grad-mean, alert count.
+2. **Loss curve** — step vs. loss (Plotly, updates on every rerun).
+3. **Grad-norm trend** — step vs. global_mean with vanishing/exploding
+   threshold bands.
+4. **Per-layer heatmap** — a compact horizontal bar chart of the
+   latest-snapshot layer norms (top-N layers ranked by norm).
+5. **Alert feed** — most recent 10 alerts from the bridge.
+6. **Expert banner** — if a GradientReport is available (post-analysis).
 
-When no live bridge is attached (static mode) the tab falls back to
-showing the most recent :class:`~gradient_pathology.core.GradientReport`
-passed explicitly.
+Auto-refresh
+------------
+Streamlit reruns the page whenever a widget changes.  To achieve
+continuous refresh while training is running the tab uses
+``st.empty()`` containers and ``time.sleep`` inside a loop *only when
+the user has ticked the “auto-refresh” checkbox*; otherwise a
+**🔄 Refresh now** button is shown instead.  This avoids blocking the
+browser when the user is not on this tab.
 """
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict, List, Optional
+import math
+from typing import Optional
 
-from gradient_pathology.core import GradientReport
+import numpy as np
+
+from gradient_pathology.monitor.bridge import LiveGradientBridge
+from gradient_pathology.dashboard.expert_panel import render_expert_banner
 
 try:
     import streamlit as st
-    _ST_AVAILABLE = True
+    _ST = True
 except ImportError:
-    _ST_AVAILABLE = False
+    _ST = False
 
 try:
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    _PLOTLY_AVAILABLE = True
+    _PLOTLY = True
 except ImportError:
-    _PLOTLY_AVAILABLE = False
+    _PLOTLY = False
+
+try:
+    import matplotlib.pyplot as plt
+    _MPL = True
+except ImportError:
+    _MPL = False
 
 
 def render_realtime_tab(
-    bridge: Optional[Any] = None,
-    static_report: Optional[GradientReport] = None,
-    key_prefix: str = "rt",
-    auto_refresh_secs: int = 3,
+    bridge: LiveGradientBridge,
+    report: Optional[object] = None,   # GradientReport | None
+    key_prefix: str = "live",
+    top_n_layers: int = 20,
 ) -> None:
-    """Render the live monitoring tab.
+    """Render the Live Monitor tab.
 
     Parameters
     ----------
     bridge:
-        A :class:`~gradient_pathology.monitor.bridge.LiveGradientBridge`
-        instance.  When ``None`` the tab operates in static mode using
-        *static_report*.
-    static_report:
-        Fallback :class:`~gradient_pathology.core.GradientReport` shown
-        when *bridge* is ``None`` or has no data yet.
+        Shared :class:`LiveGradientBridge` receiving training-loop data.
+    report:
+        Optional :class:`~gradient_pathology.core.GradientReport` (shown
+        in the Expert banner if available).
     key_prefix:
-        Streamlit widget key prefix.
-    auto_refresh_secs:
-        Seconds between auto-refresh cycles when training is active.
+        Widget key prefix for uniqueness.
+    top_n_layers:
+        How many layers to show in the per-layer norm bar chart.
     """
-    if not _ST_AVAILABLE:
+    if not _ST:
         return
 
-    # ── Pull data from bridge or session_state ────────────────────────────
-    snap: Optional[Dict[str, Any]] = None
-
-    if bridge is not None:
-        snap = bridge.snapshot()
-    else:
-        # Try session_state (populated by StreamlitCallback.inject)
-        if "live_steps" in st.session_state:
-            snap = {
-                "steps":          st.session_state.get("live_steps", []),
-                "losses":         st.session_state.get("live_losses", []),
-                "grad_snapshots": st.session_state.get("live_grad_snapshots", []),
-                "current_report": st.session_state.get("live_report"),
-                "alerts":         st.session_state.get("live_alerts", []),
-                "is_training":    st.session_state.get("live_is_training", False),
-                "total_steps":    st.session_state.get("live_total_steps", 0),
-            }
-
-    has_live_data = snap is not None and len(snap.get("steps", [])) > 0
-    report        = (
-        snap.get("current_report") if snap else None
-    ) or static_report
-
-    # ── Status bar ───────────────────────────────────────────────────────
-    is_training = snap.get("is_training", False) if snap else False
-    total_steps = snap.get("total_steps", 0)     if snap else 0
-
-    sc1, sc2, sc3 = st.columns([1, 1, 2])
-    with sc1:
-        if is_training:
-            st.success("🟢 Training active")
-        elif has_live_data:
-            st.info("⏹️ Training completed")
-        else:
-            st.warning("⏳ Awaiting training data...")
-    with sc2:
-        st.metric("Steps recorded", total_steps)
-    with sc3:
-        if is_training:
-            refresh_interval = st.slider(
-                "Auto-refresh (s)",
-                min_value=1, max_value=30,
-                value=auto_refresh_secs,
-                key=f"{key_prefix}_refresh",
-            )
-        else:
-            refresh_interval = None
-
-    # ── Real-time alerts ─────────────────────────────────────────────────
-    if snap:
-        alerts = snap.get("alerts", [])
-        if alerts:
-            from gradient_pathology.dashboard.expert_panel import render_realtime_alerts
-            render_realtime_alerts(alerts, key_prefix=key_prefix)
-
-    # ── No live data yet — show static report if available ───────────────
-    if not has_live_data:
-        if report is not None:
-            st.info(
-                "👆 No live training data yet. Showing the most recent snapshot analysis below.\n"
-                "Connect :class:`StreamlitCallback` to your training loop to enable live updates."
-            )
-            _render_static_summary(report)
-        else:
-            _render_setup_guide()
-        return
-
-    # ── Live charts ──────────────────────────────────────────────────────
-    assert snap is not None
-    steps           = snap["steps"]
-    losses          = snap["losses"]
-    grad_snapshots  = snap["grad_snapshots"]
-
-    if _PLOTLY_AVAILABLE:
-        _render_live_plotly(steps, losses, grad_snapshots, key_prefix)
-    else:
-        _render_live_matplotlib(steps, losses, grad_snapshots, key_prefix)
-
-    # ── Expert panel from live report ────────────────────────────────────
+    # ---- Expert banner (if report available) ----------------------------
     if report is not None:
-        st.markdown("---")
-        from gradient_pathology.dashboard.expert_panel import render_expert_panel
-        render_expert_panel(report, key_prefix=f"{key_prefix}_exp", expanded=False)
+        render_expert_banner(report, key_prefix=f"{key_prefix}_banner")
+        st.divider()
 
-    # ── Auto-refresh ─────────────────────────────────────────────────────
-    if is_training and refresh_interval:
-        time.sleep(refresh_interval)
-        st.rerun()
+    # ---- Bridge empty state ---------------------------------------------
+    if bridge.is_empty:
+        st.info(
+            "📶 Waiting for training data…\n\n"
+            "Connect a :class:`StreamlitCallback` to your training loop:\n"
+            "```python\n"
+            "from gradient_pathology.monitor import StreamlitCallback, LiveGradientBridge\n"
+            "bridge   = LiveGradientBridge.from_session_state()\n"
+            "callback = StreamlitCallback(model, bridge)\n"
+            "# … in your loop: callback.on_batch_end(step, loss)\n"
+            "```"
+        )
+        return
+
+    snaps = bridge.all_snapshots()
+    latest = snaps[-1]
+
+    # ---- Status row ------------------------------------------------------
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Step",            str(latest.step))
+    c2.metric("Loss",            f"{latest.loss:.4f}"   if math.isfinite(latest.loss) else "N/A")
+    c3.metric("Grad mean",       f"{latest.global_mean:.2e}" if math.isfinite(latest.global_mean) else "N/A")
+    total_alerts = sum(len(s.alerts) for s in snaps)
+    c4.metric("Total alerts",    str(total_alerts),
+              delta=None if total_alerts == 0 else f"+{len(latest.alerts)}",
+              delta_color="inverse")
+
+    st.divider()
+
+    # ---- Charts ----------------------------------------------------------
+    steps_loss,   losses     = bridge.metrics_series("loss")
+    steps_mean,   means      = bridge.metrics_series("global_mean")
+
+    # Filter NaN
+    loss_pairs = [(s, v) for s, v in zip(steps_loss, losses)   if math.isfinite(v)]
+    mean_pairs = [(s, v) for s, v in zip(steps_mean, means)    if math.isfinite(v)]
+
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("**Training Loss**")
+        if _PLOTLY and loss_pairs:
+            fig = _plotly_line(
+                x=[p[0] for p in loss_pairs],
+                y=[p[1] for p in loss_pairs],
+                name="loss",
+                color="#4C9BE8",
+                ylog=True,
+            )
+            st.plotly_chart(fig, use_container_width=True,
+                            key=f"{key_prefix}_loss_chart")
+        elif _MPL and loss_pairs:
+            fig = _mpl_line(
+                x=[p[0] for p in loss_pairs],
+                y=[p[1] for p in loss_pairs],
+                ylabel="Loss (log)",
+            )
+            st.pyplot(fig)
+        else:
+            st.caption("No loss data yet.")
+
+    with chart_col2:
+        st.markdown("**Global Gradient Norm Trend**")
+        if _PLOTLY and mean_pairs:
+            fig = _plotly_line_with_thresholds(
+                x=[p[0] for p in mean_pairs],
+                y=[p[1] for p in mean_pairs],
+            )
+            st.plotly_chart(fig, use_container_width=True,
+                            key=f"{key_prefix}_grad_chart")
+        elif _MPL and mean_pairs:
+            fig = _mpl_line(
+                x=[p[0] for p in mean_pairs],
+                y=[p[1] for p in mean_pairs],
+                ylabel="grad_mean (log)",
+            )
+            st.pyplot(fig)
+        else:
+            st.caption("No gradient data yet.")
+
+    # ---- Per-layer bar chart (latest snapshot) ---------------------------
+    if latest.layer_norms:
+        st.divider()
+        st.markdown(f"**Per-layer gradient norms (latest step, top {top_n_layers})**")
+        sorted_layers = sorted(
+            latest.layer_norms.items(), key=lambda kv: kv[1], reverse=True
+        )[:top_n_layers]
+        names  = [kv[0].split(".")[-1][:22] for kv in sorted_layers]
+        values = [kv[1] for kv in sorted_layers]
+
+        if _PLOTLY:
+            colors = [
+                "#E74C3C" if v < 1e-7
+                else "#E67E22" if v > 1e3
+                else "#2ECC71"
+                for v in values
+            ]
+            fig = go.Figure(go.Bar(
+                x=values, y=names,
+                orientation="h",
+                marker_color=colors,
+                text=[f"{v:.2e}" for v in values],
+                textposition="outside",
+            ))
+            fig.update_xaxes(type="log", gridcolor="#2A2D3A")
+            fig.update_layout(
+                height=max(250, len(names) * 22 + 60),
+                plot_bgcolor="#0F1117",
+                paper_bgcolor="#0F1117",
+                font=dict(color="#CCCCCC", size=10),
+                margin=dict(l=10, r=80, t=10, b=10),
+            )
+            st.plotly_chart(fig, use_container_width=True,
+                            key=f"{key_prefix}_layer_bars")
+
+    # ---- Alert feed -------------------------------------------------------
+    all_alerts = []
+    for s in reversed(snaps):
+        all_alerts.extend(reversed(s.alerts))
+        if len(all_alerts) >= 10:
+            break
+
+    if all_alerts:
+        st.divider()
+        st.markdown("**🔔 Recent alerts (latest first)**")
+        for alert in all_alerts[:10]:
+            if "Vanishing" in alert or "Exploding" in alert:
+                st.error(alert)
+            else:
+                st.warning(alert)
+
+    # ---- Refresh controls ------------------------------------------------
+    st.divider()
+    col_refresh, col_count = st.columns([2, 3])
+    with col_refresh:
+        if st.button("🔄 Refresh now", key=f"{key_prefix}_refresh"):
+            st.rerun()
+    with col_count:
+        st.caption(
+            f"Buffer: {len(snaps)}/{bridge._max_steps} steps · "
+            f"Total pushed: {bridge.total_pushed}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Chart helpers
 # ---------------------------------------------------------------------------
 
-def _render_live_plotly(
-    steps: List[int],
-    losses: List[float],
-    grad_snapshots: List[Dict],
-    key_prefix: str,
-) -> None:
-    """Render live loss + gradient-norm charts using Plotly."""
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=["Training Loss", "Layer Gradient Norms (top 8)"],
-        horizontal_spacing=0.08,
-    )
-
-    # Loss curve
-    if losses:
-        fig.add_trace(
-            go.Scatter(
-                x=list(steps),
-                y=list(losses),
-                mode="lines",
-                name="loss",
-                line=dict(color="#4C9BE8", width=2),
-            ),
-            row=1, col=1,
-        )
-
-    # Per-layer grad-norm trends (pick top 8 layers by variance)
-    if grad_snapshots:
-        all_layers = list(grad_snapshots[-1].keys())
-
-        # Compute variance of mean-grad across history for each layer
-        layer_variance: Dict[str, float] = {}
-        for name in all_layers:
-            series = [
-                snap[name]["mean"] for snap in grad_snapshots
-                if name in snap
-            ]
-            layer_variance[name] = float(
-                __import__("numpy").var(series) if series else 0.0
-            )
-
-        top_layers = sorted(
-            all_layers,
-            key=lambda n: layer_variance.get(n, 0.0),
-            reverse=True,
-        )[:8]
-
-        palette = [
-            "#4C9BE8", "#F5A623", "#7ED321", "#E74C3C",
-            "#9B59B6", "#2ECC71", "#E67E22", "#95A5A6",
-        ]
-        for j, name in enumerate(top_layers):
-            series = [
-                snap[name]["mean"] for snap in grad_snapshots
-                if name in snap
-            ]
-            fig.add_trace(
-                go.Scatter(
-                    x=list(steps)[-len(series):],
-                    y=series,
-                    mode="lines",
-                    name=name.split(".")[-1][:20],
-                    line=dict(color=palette[j % len(palette)], width=1.5),
-                    opacity=0.85,
-                ),
-                row=1, col=2,
-            )
-
-    fig.update_yaxes(type="log", row=1, col=2, gridcolor="#2A2D3A")
+def _plotly_line(
+    x: list, y: list, name: str, color: str, ylog: bool = False
+) -> "go.Figure":
+    fig = go.Figure(go.Scatter(
+        x=x, y=y, mode="lines",
+        line=dict(color=color, width=1.8),
+        name=name,
+        fill="tozeroy",
+        fillcolor=color.replace("#", "rgba(") + ",0.08)" if "#" in color else color,
+    ))
     fig.update_layout(
-        height=360,
+        height=260,
         plot_bgcolor="#0F1117",
         paper_bgcolor="#0F1117",
-        font=dict(color="#FAFAFA", size=11),
-        legend=dict(
-            bgcolor="#1A1D24",
-            font=dict(size=9, color="#CCCCCC"),
-            orientation="v",
-        ),
-        margin=dict(l=10, r=10, t=40, b=10),
+        font=dict(color="#CCCCCC", size=10),
+        margin=dict(l=10, r=10, t=10, b=30),
+        showlegend=False,
     )
-    fig.update_xaxes(gridcolor="#2A2D3A")
-    fig.update_yaxes(gridcolor="#2A2D3A", row=1, col=1)
+    if ylog:
+        fig.update_yaxes(type="log", gridcolor="#2A2D3A")
+    else:
+        fig.update_yaxes(gridcolor="#2A2D3A")
+    fig.update_xaxes(gridcolor="#2A2D3A", title_text="step")
+    return fig
 
-    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_live_chart")
+
+def _plotly_line_with_thresholds(x: list, y: list) -> "go.Figure":
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode="lines",
+        line=dict(color="#6ECE58", width=1.8),
+        name="grad mean",
+    ))
+    # Vanishing band
+    fig.add_hrect(y0=0, y1=1e-7,
+                  fillcolor="rgba(231,76,60,0.10)",
+                  line_width=0,
+                  annotation_text="vanishing",
+                  annotation_position="top left",
+                  annotation_font_size=9,
+                  annotation_font_color="#E74C3C")
+    # Exploding band
+    fig.add_hrect(y0=1e3, y1=max(max(y) * 2, 1e4),
+                  fillcolor="rgba(230,126,34,0.10)",
+                  line_width=0,
+                  annotation_text="exploding",
+                  annotation_position="bottom right",
+                  annotation_font_size=9,
+                  annotation_font_color="#E67E22")
+    fig.update_layout(
+        height=260,
+        plot_bgcolor="#0F1117",
+        paper_bgcolor="#0F1117",
+        font=dict(color="#CCCCCC", size=10),
+        margin=dict(l=10, r=10, t=10, b=30),
+        showlegend=False,
+    )
+    fig.update_yaxes(type="log", gridcolor="#2A2D3A")
+    fig.update_xaxes(gridcolor="#2A2D3A", title_text="step")
+    return fig
 
 
-def _render_live_matplotlib(
-    steps: List[int],
-    losses: List[float],
-    grad_snapshots: List[Dict],
-    key_prefix: str,
-) -> None:
-    """Matplotlib fallback for the live charts."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4), facecolor="#0F1117")
-    for ax in (ax1, ax2):
-        ax.set_facecolor("#0F1117")
-        ax.tick_params(colors="#CCCCCC")
-        ax.spines["bottom"].set_color("#333")
-        ax.spines["left"].set_color("#333")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-
-    if losses:
-        ax1.plot(steps, losses, color="#4C9BE8", linewidth=1.5)
-        ax1.set_title("Training Loss", color="#CCCCCC")
-        ax1.set_yscale("log")
-
-    if grad_snapshots:
-        all_layers = list(grad_snapshots[-1].keys())[:8]
-        for name in all_layers:
-            series = [snap[name]["mean"] for snap in grad_snapshots if name in snap]
-            ax2.plot(steps[-len(series):], series,
-                     label=name.split(".")[-1][:15], linewidth=1)
-        ax2.set_title("Layer Grad Norms", color="#CCCCCC")
-        ax2.set_yscale("log")
-        ax2.legend(fontsize=7, labelcolor="#CCCCCC", facecolor="#1A1D24")
-
+def _mpl_line(x: list, y: list, ylabel: str) -> "plt.Figure":
+    fig, ax = plt.subplots(figsize=(6, 2.8), facecolor="#0F1117")
+    ax.set_facecolor("#0F1117")
+    ax.plot(x, y, color="#4C9BE8", linewidth=1.2)
+    ax.set_yscale("log")
+    ax.set_ylabel(ylabel, color="#CCCCCC", fontsize=8)
+    ax.set_xlabel("step", color="#CCCCCC", fontsize=8)
+    ax.tick_params(colors="#CCCCCC", labelsize=7)
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#333")
+    ax.grid(True, alpha=0.2, color="#444")
     plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
-
-
-def _render_static_summary(report: GradientReport) -> None:
-    """Render a compact summary from a static report (no live data)."""
-    n        = len(report.layer_stats)
-    n_bad    = len(report.get_problematic_layers())
-    n_good   = n - n_bad
-    health   = n_good / n * 100 if n > 0 else 0.0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total layers",       n)
-    c2.metric("Healthy",            f"{n_good} ({health:.0f}%)")
-    c3.metric("Problematic",        n_bad, delta=f"-{n_bad}" if n_bad > 0 else None,
-              delta_color="inverse")
-
-    from gradient_pathology.dashboard.expert_panel import render_expert_banner
-    render_expert_banner(report)
-
-
-def _render_setup_guide() -> None:
-    """Show an onboarding guide when no data is available yet."""
-    st.markdown("""
-**Connect your training loop to see live charts.**
-
-```python
-from gradient_pathology.monitor import LiveGradientBridge, StreamlitCallback
-
-bridge   = LiveGradientBridge(max_steps=300)
-callback = StreamlitCallback(model, bridge=bridge)
-
-for step, (x, y) in enumerate(loader):
-    optimizer.zero_grad()
-    loss = criterion(model(x), y)
-    loss.backward()
-    optimizer.step()
-    callback.on_batch_end(optimizer, loss=loss.item(), step=step)
-
-callback.on_train_end()
-```
-
-Or add to a HuggingFace `Trainer`:
-
-```python
-trainer = Trainer(
-    model=model,
-    callbacks=[StreamlitCallback.as_hf_callback(bridge=bridge)],
-)
-```
-""")
+    return fig
