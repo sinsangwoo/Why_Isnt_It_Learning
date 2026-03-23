@@ -1,0 +1,14 @@
+# pathology-diagnose configuration example
+# Run: pathology-diagnose --config examples/cli_config_example.yaml --output-dir ./reports
+
+# model_path: null            # omit → synthetic demo MLP is used
+output_dir: ./gradient_pathology_reports
+num_steps: 100
+threshold: 1.0e-7
+batch_size: 32
+device: cpu
+input_shape:
+  - 64
+save_parquet: true
+save_json: true
+quiet: false

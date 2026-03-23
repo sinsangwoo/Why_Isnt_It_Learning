@@ -1,0 +1,11 @@
+{
+  "output_dir": "./gradient_pathology_reports",
+  "num_steps": 50,
+  "threshold": 1e-7,
+  "batch_size": 32,
+  "device": "cpu",
+  "input_shape": [64],
+  "save_parquet": true,
+  "save_json": true,
+  "quiet": false
+}

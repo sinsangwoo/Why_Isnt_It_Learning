@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DiagnosisConfig",
+  "description": "Configuration schema for pathology-diagnose CLI",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "model_path": {
+      "type": ["string", "null"],
+      "description": "Path to a saved nn.Module (.pt / .pth). Omit to use the synthetic demo model."
+    },
+    "output_dir": {
+      "type": "string",
+      "default": "./gradient_pathology_reports",
+      "description": "Directory where Parquet/JSON artefacts and the Markdown summary are written."
+    },
+    "num_steps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000,
+      "default": 100,
+      "description": "Number of forward/backward passes used to collect gradient statistics."
+    },
+    "threshold": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "default": 1e-7,
+      "description": "Vanishing-gradient detection threshold passed to ExpertEngine."
+    },
+    "batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536,
+      "default": 32,
+      "description": "Mini-batch size used when generating synthetic data."
+    },
+    "device": {
+      "type": "string",
+      "enum": ["cpu", "cuda"],
+      "default": "cpu",
+      "description": "Torch device to run the analysis on."
+    },
+    "input_shape": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 1,
+      "default": [10],
+      "description": "Input tensor shape excluding the batch dimension."
+    },
+    "save_parquet": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to save per-layer stats as layer_stats.parquet."
+    },
+    "save_json": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to save the full report as report.json."
+    },
+    "quiet": {
+      "type": "boolean",
+      "default": false,
+      "description": "Suppress progress bars and info messages; only print the final report."
+    }
+  }
+}
