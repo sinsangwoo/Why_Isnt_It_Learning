@@ -1,0 +1,25 @@
+# gradient-pathology CLI config example
+# Run with:  pathology-diagnose --config configs/example_config.yaml
+
+# Number of forward/backward passes (synthetic mode)
+num_steps: 50
+
+# Vanishing-gradient detection threshold
+# Layers with grad_norm below this value are flagged as vanishing.
+# Default: 1e-7
+threshold: 1.0e-7
+
+# Where to write artefacts (report.json, layer_stats.parquet)
+output_dir: pathology_output
+
+# Synthetic mode input shape (excluding batch dim)
+input_shape: [10]
+
+# Batch size for synthetic mode
+batch_size: 32
+
+# Device: cpu | cuda | mps
+device: cpu
+
+# Output format: markdown | json
+report_format: markdown

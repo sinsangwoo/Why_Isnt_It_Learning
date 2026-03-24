@@ -1,0 +1,9 @@
+{
+  "num_steps": 50,
+  "threshold": 1e-7,
+  "output_dir": "pathology_output",
+  "input_shape": [10],
+  "batch_size": 32,
+  "device": "cpu",
+  "report_format": "markdown"
+}
