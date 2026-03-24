@@ -19,8 +19,10 @@ from gradient_pathology.monitor import (
     StreamlitCallback,
     HuggingFaceCallbackAdapter,
 )
+# Phase 2 — non-invasive watch API
+from gradient_pathology.watch import ModelWatcher, watch
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 __all__ = [
     "GradientAnalyzer",
     "GradientReport",
@@ -41,4 +43,7 @@ __all__ = [
     "LiveGradientBridge",
     "StreamlitCallback",
     "HuggingFaceCallbackAdapter",
+    # Phase-5 (this PR) — non-invasive watch
+    "ModelWatcher",
+    "watch",
 ]
