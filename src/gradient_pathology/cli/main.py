@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -86,30 +86,34 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _load_config(args: argparse.Namespace):
-    """Load config from file (if given) then apply CLI overrides."""
+def _load_config(args: Any) -> "Any":
+    """Load config from file (if given) then apply CLI overrides.
+
+    Accepts either an ``argparse.Namespace`` or any object with the same
+    attributes (e.g. ``types.SimpleNamespace`` used in tests).
+    """
     from gradient_pathology.cli.config import DiagnoseConfig
 
     cfg = DiagnoseConfig.from_file(args.config) if args.config else DiagnoseConfig()
 
     # CLI args override config-file values
-    if args.num_steps is not None:
+    if getattr(args, "num_steps", None) is not None:
         cfg.num_steps = args.num_steps
-    if args.threshold is not None:
+    if getattr(args, "threshold", None) is not None:
         cfg.threshold = args.threshold
-    if args.output_dir is not None:
+    if getattr(args, "output_dir", None) is not None:
         cfg.output_dir = args.output_dir
-    if args.device is not None:
+    if getattr(args, "device", None) is not None:
         cfg.device = args.device
-    if args.report_format is not None:
+    if getattr(args, "report_format", None) is not None:
         cfg.report_format = args.report_format
 
     cfg.validate()
     return cfg
 
 
-def _build_demo_model():
-    """Return a simple demo model for the no-model-path synthetic mode."""
+def _build_demo_model() -> "Any":
+    """Return a simple demo Sequential model for synthetic-mode diagnosis."""
     import torch.nn as nn
     return nn.Sequential(
         nn.Linear(10, 64),
@@ -131,9 +135,10 @@ def run_pipeline(
 ) -> int:
     """Programmatic entry-point for the CLI pipeline (also used by tests).
 
-    Returns the exit code (0 = success).
+    Returns the exit code (0 = success, 1 = error).
     """
     import types
+
     # Build a fake Namespace so _load_config can work without argparse
     fake_args = types.SimpleNamespace(
         config=config_path,
@@ -144,7 +149,7 @@ def run_pipeline(
         report_format=report_format,
     )
     try:
-        cfg = _load_config(fake_args)  # type: ignore[arg-type]
+        cfg = _load_config(fake_args)
     except (FileNotFoundError, ValueError, ImportError) as exc:
         print(f"❌  Config error: {exc}", file=sys.stderr)
         return 1
@@ -161,9 +166,9 @@ def run_pipeline(
         batch_size=cfg.batch_size,
     )
 
-    # ── Step 3: run ExpertEngine ─────────────────────────────────────
+    # ── Step 3: run ExpertEngine (7 rules) ───────────────────────────
     from gradient_pathology.expert.engine import ExpertEngine
-    engine_kwargs = {}
+    engine_kwargs: dict = {}
     if cfg.threshold is not None:
         engine_kwargs["vanishing_threshold"] = cfg.threshold
     engine = ExpertEngine(**engine_kwargs)
@@ -173,7 +178,7 @@ def run_pipeline(
     output_path = Path(cfg.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    from gradient_pathology.cli.report import save_json_report, save_parquet_report, render_markdown
+    from gradient_pathology.cli.report import render_markdown, save_json_report, save_parquet_report
 
     save_json_report(report, findings, output_path)
     try:
@@ -183,18 +188,12 @@ def run_pipeline(
 
     # ── Step 5: print report ─────────────────────────────────────────
     if cfg.report_format == "json":
-        import json
-        from gradient_pathology.cli.report import save_json_report
         dest = output_path / "report.json"
         print(dest.read_text())
+    elif quiet:
+        print(engine.quick_summary(report))
     else:
-        if not quiet:
-            print(render_markdown(report, findings, output_path))
-        else:
-            # Quiet mode: just print expert summary
-            from gradient_pathology.expert.engine import ExpertEngine as _EE
-            _e = ExpertEngine(**engine_kwargs)
-            print(_e.quick_summary(report))
+        print(render_markdown(report, findings, output_path))
 
     return 0
 
@@ -204,7 +203,6 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    import types
     try:
         cfg = _load_config(args)
     except (FileNotFoundError, ValueError, ImportError) as exc:
@@ -225,7 +223,7 @@ def main() -> None:
 
     # ── Step 3: ExpertEngine ─────────────────────────────────────────
     from gradient_pathology.expert.engine import ExpertEngine
-    engine_kwargs = {}
+    engine_kwargs: dict = {}
     if cfg.threshold is not None:
         engine_kwargs["vanishing_threshold"] = cfg.threshold
     engine = ExpertEngine(**engine_kwargs)
@@ -235,7 +233,7 @@ def main() -> None:
     output_path = Path(cfg.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    from gradient_pathology.cli.report import save_json_report, save_parquet_report, render_markdown
+    from gradient_pathology.cli.report import render_markdown, save_json_report, save_parquet_report
 
     save_json_report(report, findings, output_path)
     try:
