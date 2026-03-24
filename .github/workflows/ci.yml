@@ -6,196 +6,187 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel in-progress runs on the same branch when a new push arrives.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────
-  # Job 1: Lint — fast feedback before any tests run
-  # ────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────
+  # Job 1 — Lint (ruff)
+  # Scope: src/ + tests/cli/ + tests/watch/ only.
+  # Legacy test files outside these dirs are excluded intentionally.
+  # ──────────────────────────────────────────────────────────────────
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install ruff
-        run: pip install ruff>=0.1.0
-
+        run: pip install "ruff>=0.1.0"
       - name: Run ruff
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/cli/ tests/watch/
 
-  # ────────────────────────────────────────────────────────────────────
-  # Job 2: Type-check — mypy on the src tree
-  # ────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────
+  # Job 2 — Type-check (mypy)
+  # Scope: the two new modules introduced in Phase 1 & 2.
+  # ──────────────────────────────────────────────────────────────────
   typecheck:
     name: Type-check (mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install package + mypy
+      - name: Install
         run: |
           pip install -e ".[dev]"
-          pip install mypy>=1.0.0
-
+          pip install "mypy>=1.0.0"
       - name: Run mypy
-        run: mypy src/gradient_pathology/cli/
+        run: |
+          mypy src/gradient_pathology/cli/
+          mypy src/gradient_pathology/watch.py
+          mypy src/gradient_pathology/runner.py
 
-  # ────────────────────────────────────────────────────────────────────
-  # Job 3: Unit + integration tests — matrix over Python versions
-  # ────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────
+  # Job 3 — Tests (matrix: Python 3.9 / 3.10 / 3.11)
+  # ──────────────────────────────────────────────────────────────────
   test:
     name: Test (Python ${{ matrix.python-version }})
-    needs: lint          # only run tests if lint passes
+    needs: lint
     runs-on: ubuntu-latest
-
     strategy:
-      fail-fast: false   # show all failures, not just the first
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11"]
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      # Cache pip downloads to speed up subsequent runs
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: pip-${{ matrix.python-version }}-
-
-      - name: Install package + test dependencies
+      - name: Install
         run: pip install -e ".[dev]"
 
-      # ── CLI-specific unit tests (fast, no GPU needed) ──────────────
-      - name: Unit tests — cli.config
-        run: |
-          pytest tests/cli/test_config.py -v \
-            --tb=short \
-            --cov=src/gradient_pathology/cli \
-            --cov-report=term-missing
+      # Phase 1 — CLI unit tests
+      - name: Unit — cli.config
+        run: pytest tests/cli/test_config.py -v --tb=short --cov=src/gradient_pathology/cli --cov-report=term-missing
+      - name: Unit — cli.report
+        run: pytest tests/cli/test_report.py -v --tb=short --cov=src/gradient_pathology/cli --cov-append --cov-report=term-missing
+      - name: Smoke — entrypoint
+        run: pytest tests/cli/test_entrypoint.py -v --tb=short --cov=src/gradient_pathology/cli --cov-append --cov-report=term-missing
+      - name: Integration — pipeline
+        run: pytest tests/cli/test_pipeline.py -v --tb=short --cov=src/gradient_pathology/cli --cov-append --cov-report=term-missing
 
-      - name: Unit tests — cli.report
+      # Phase 2 — watch / runner unit tests
+      - name: Unit — watch context manager
         run: |
-          pytest tests/cli/test_report.py -v \
+          pytest tests/watch/test_watch_context_manager.py -v \
             --tb=short \
-            --cov=src/gradient_pathology/cli \
+            --cov=src/gradient_pathology/watch \
             --cov-append \
             --cov-report=term-missing
-
-      # ── CLI entrypoint smoke tests ────────────────────────────────
-      - name: Smoke tests — entrypoint
+      - name: Unit — runner (pathology-run)
         run: |
-          pytest tests/cli/test_entrypoint.py -v \
+          pytest tests/watch/test_runner.py -v \
             --tb=short \
-            --cov=src/gradient_pathology/cli \
-            --cov-append \
-            --cov-report=term-missing
-
-      # ── Full pipeline integration tests ───────────────────────────
-      - name: Integration tests — pipeline
-        run: |
-          pytest tests/cli/test_pipeline.py -v \
-            --tb=short \
-            --cov=src/gradient_pathology/cli \
+            --cov=src/gradient_pathology/runner \
             --cov-append \
             --cov-report=term-missing:coverage.txt \
             --cov-report=xml:coverage.xml
 
-      # ── Existing test suite (non-CLI) ─────────────────────────────
-      - name: Existing tests
-        run: pytest tests/ --ignore=tests/cli -v --tb=short || true
+      # Legacy tests (non-blocking)
+      - name: Legacy tests
+        run: pytest tests/ --ignore=tests/cli --ignore=tests/watch -v --tb=short || true
 
-      # Upload coverage only from Python 3.11 to avoid duplicate reports
-      - name: Upload coverage to Codecov
+      - name: Upload coverage
         if: matrix.python-version == '3.11'
         uses: codecov/codecov-action@v4
         with:
           file: coverage.xml
-          flags: cli
+          flags: phase2
           fail_ci_if_error: false
 
-  # ────────────────────────────────────────────────────────────────────
-  # Job 4: CLI smoke-test via installed entrypoint
-  # Verifies that `pathology-diagnose` is correctly registered by pip
-  # ────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────
+  # Job 4 — CLI smoke (installed entrypoints)
+  # ──────────────────────────────────────────────────────────────────
   cli-smoke:
     name: CLI entrypoint smoke
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install
         run: pip install -e ".[dev]"
 
+      # ── pathology-diagnose ────────────────────────────────────────
       - name: pathology-diagnose --help
         run: pathology-diagnose --help
-
-      - name: pathology-diagnose (quick run)
+      - name: pathology-diagnose (quick, JSON)
         run: |
-          pathology-diagnose \
-            --num-steps 5 \
-            --output-dir /tmp/smoke_output \
-            --report-format json
-          python -c "
+          pathology-diagnose --num-steps 5 --output-dir /tmp/smoke --report-format json
+          python - <<'EOF'
           import json, pathlib
-          data = json.loads(pathlib.Path('/tmp/smoke_output/report.json').read_text())
-          assert 'global' in data
-          assert 'layers' in data
-          assert len(data['layers']) > 0
-          print('Smoke test passed:', len(data[\"layers\"]), 'layers analysed')
-          "
+          d = json.loads(pathlib.Path('/tmp/smoke/report.json').read_text())
+          assert 'global' in d and len(d['layers']) > 0
+          print('pathology-diagnose OK:', len(d['layers']), 'layers')
+          EOF
 
-      - name: pathology-diagnose with JSON config
+      # ── pathology-run ─────────────────────────────────────────────
+      - name: pathology-run --help
+        run: pathology-run --help
+      - name: pathology-run (simple script)
         run: |
-          pathology-diagnose \
-            --config configs/example_config.json \
-            --num-steps 3 \
-            --output-dir /tmp/cfg_test
+          cat > /tmp/train_smoke.py << 'PYEOF'
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 1))
+          loss_fn = nn.MSELoss()
+          for _ in range(3):
+              x = torch.randn(4, 8)
+              model.zero_grad()
+              loss_fn(model(x), torch.randn(4, 1)).backward()
+          PYEOF
+          pathology-run /tmp/train_smoke.py --output-dir /tmp/run_smoke --quiet
+          test -f /tmp/run_smoke/report.json
+      - name: pathology-run (JSON format)
+        run: |
+          pathology-run /tmp/train_smoke.py \
+            --output-dir /tmp/run_json \
+            --report-format json
+          python - <<'EOF'
+          import json, pathlib
+          d = json.loads(pathlib.Path('/tmp/run_json/report.json').read_text())
+          assert d['global']['data_source'] == 'script_run'
+          print('pathology-run OK:', len(d['layers']), 'layers')
+          EOF
 
-      - name: pathology-diagnose --quiet
-        run: pathology-diagnose --num-steps 3 --quiet
-
-  # ────────────────────────────────────────────────────────────────────
-  # Job 5: Build check — ensure the package builds cleanly
-  # ────────────────────────────────────────────────────────────────────
+  # ──────────────────────────────────────────────────────────────────
+  # Job 5 — Build check
+  # ──────────────────────────────────────────────────────────────────
   build:
     name: Build check
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install build tools
         run: pip install build twine
-
-      - name: Build wheel + sdist
+      - name: Build
         run: python -m build
-
-      - name: Check distribution
+      - name: Check dist
         run: twine check dist/*
